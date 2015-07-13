@@ -1544,6 +1544,31 @@ saSegmentBoundaryConditions(			float4*		oldPos,
 				// for solid boundaries we have de/dn = 4 0.09^0.075 k^1.5/(0.41 r)
 				oldEps[index] = fmax(sumeps/alpha,1e-5f); // eps should never be 0
 		}
+		// non-open boundaries
+		else {
+			alpha = fmax(alpha, 0.1f*gam); // avoid division by 0
+			// density condition
+			oldVel[index].w = fmax(sumrho/alpha,d_rho0[fluid_num(info)]);
+			// k-epsilon boundary conditions
+			if (oldTKE) {
+				// k condition
+				oldTKE[index] = sumtke/alpha;
+				// eulerian velocity on the wall
+				eulerVel = (	oldEulerVel[vertXidx] +
+								oldEulerVel[vertYidx] +
+								oldEulerVel[vertZidx] )/3.0f;
+				// ensure that velocity is normal to segment normal
+				eulerVel -= dot3(eulerVel,normal)*normal;
+				oldEulerVel[index] = eulerVel;
+			}
+			// if k-epsilon is not used but oldEulerVel is present (for open boundaries) set it to 0
+			else if (oldEulerVel)
+				oldEulerVel[index] = make_float4(0.0f);
+			// epsilon condition
+			if (oldEps)
+				// for solid boundaries we have de/dn = 4 0.09^0.075 k^1.5/(0.41 r)
+				oldEps[index] = fmax(sumeps/alpha,1e-5f); // eps should never be 0
+		}
 
 		// Compute the Riemann Invariants for I/O conditions
 		if (IO_BOUNDARY(info) && !CORNER(info)) {
@@ -1826,6 +1851,9 @@ saVertexBoundaryConditions(
 			const uint neibVertZidx = vertIDToIndex[neibVerts.z];
 
 			if (BOUNDARY(neib_info)) {
+				// corner vertices only take solid wall segments into account
+				if (CORNER(info) && IO_BOUNDARY(neib_info))
+					continue;
 				const float4 boundElement = tex1Dfetch(boundTex, neib_index);
 
 				// check if vertex is associated with this segment
@@ -2989,6 +3017,7 @@ saIdentifyCornerVertices(
 				const	float4*			oldPos,
 						particleinfo*	pinfo,
 				const	hashKey*		particleHash,
+				const	vertexinfo*		vertices,
 				const	uint*			cellStart,
 				const	neibdata*		neibsList,
 				const	uint			numParticles,
@@ -3017,6 +3046,8 @@ saIdentifyCornerVertices(
 	uint neib_cell_base_index = 0;
 	float3 pos_corr;
 
+	const uint vid = id(info);
+
 	// Loop over all the neighbors
 	for (idx_t i = 0; i < d_neiblist_end; i += d_neiblist_stride) {
 		neibdata neib_data = neibsList[i + index];
@@ -3031,20 +3062,10 @@ saIdentifyCornerVertices(
 
 		// loop only over boundary elements that are not of the same open boundary
 		if (BOUNDARY(neib_info) && !(obj == neib_obj && IO_BOUNDARY(neib_info))) {
-			const float4 relPos = pos_corr - oldPos[neib_index];
-			const float r = length3(relPos);
-			// if the position is greater than 1.5 dr then the segment is too far away
-			if (r > deltap*1.5f)
-				continue;
-
-			// check normal distance to segment
-			const float4 boundElement = tex1Dfetch(boundTex, neib_index);
-			const float normDist = fabs(dot3(boundElement,relPos));
-
-			// if normal distance is less than dr then the particle is a corner particle
-			// this implies that the mass of this particle won't vary but it is still treated
-			// like an open boundary in every other aspect
-			if (normDist < deltap - eps){
+			// check if the current vertex is part of the vertices of the segment
+			if (vertices[neib_index].x == vid ||
+				vertices[neib_index].y == vid ||
+				vertices[neib_index].z == vid) {
 				SET_FLAG(info, FG_CORNER);
 				pinfo[index] = info;
 				break;

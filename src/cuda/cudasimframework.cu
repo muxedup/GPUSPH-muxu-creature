@@ -76,6 +76,31 @@ struct CUDABoundaryConditionsSelector<kerneltype, visctype, SA_BOUNDARY, simflag
 	{ return new BCEtype(); } // TODO FIXME when we have proper BCEs
 };
 
+/// Some combinations of frameworks for kernels are invalid/
+/// unsupported/untested and we want to prevent the user from
+/// using them, by (1) catching the error as soon as possible
+/// during compilation and (2) give an error message that is
+/// as descriptive as possible (non-trivial with C++).
+/// Point (2) is particularly hard to realize with nvcc because
+/// it doesn't print out the actual line with the error, so we
+/// need some indirection; we achieve this by making the
+/// CUDASimFramework subclass a template class InvalidOptionCombination
+/// whose instantiation will fail in case of invalid option combinations;
+/// this failure is due to trying to subclass an IncompleteType class
+/// which is not defined except in the not invalid case.
+/// nvcc will then show the error for InvalidOptionCombination, which
+/// is hopefully descriptive enough for users.
+template<bool invalid>
+class IncompleteType;
+
+template<>
+class IncompleteType<false>
+{};
+
+template<bool invalid>
+class InvalidOptionCombination : IncompleteType<invalid>
+{};
+
 /* CUDASimFrameworkImpl */
 
 // Here we define the implementation for the CUDASimFramework. The use of *Impl is
@@ -88,8 +113,34 @@ template<
 	ViscosityType visctype,
 	BoundaryType boundarytype,
 	Periodicity periodicbound,
-	flag_t simflags>
-class CUDASimFrameworkImpl : public SimFramework
+	flag_t simflags,
+	bool invalid_combination = (
+		// Currently, we consider invalid only the case
+		// of SA_BOUNDARY
+
+		// TODO extend to include all unsupported/untested combinations for other boundary conditions
+
+		boundarytype == SA_BOUNDARY && (
+			// viscosity
+			visctype == KINEMATICVISC		||	// untested
+			visctype == SPSVISC 			||	// untested
+			visctype == ARTVISC 			||	// untested (use is discouraged, use Ferrari correction)
+			// kernel
+			! (kerneltype == WENDLAND) 		||	// only the Wendland kernel is allowed in SA_BOUNDARY
+												// all other kernels would require their respective
+												// gamma and grad gamma formulation
+			// formulation
+			sph_formulation == SPH_GRENIER	||	// multi-fluid is currently not implemented
+			// flags
+			simflags & ENABLE_XSPH			||	// untested
+			simflags & ENABLE_DEM			||	// not implemented (flat wall formulation is in an old branch)
+			(simflags & ENABLE_INLET_OUTLET && ((~simflags) & ENABLE_DENSITY_SUM))
+												// inlet outlet works only with the summation density
+		)
+	)
+>
+class CUDASimFrameworkImpl : public SimFramework,
+	private InvalidOptionCombination<invalid_combination>
 {
 public:
 	CUDASimFrameworkImpl() : SimFramework()

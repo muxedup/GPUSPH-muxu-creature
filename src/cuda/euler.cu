@@ -163,8 +163,7 @@ basicstep(
 	// boundary elements are updated in-place; only used for rotation in the second step
 	float4 *newBoundElement = bufwrite->getData<BUFFER_BOUNDELEMENTS>();
 
-#define ARGS oldPos, particleHash, neibsList, cellStart, oldVel, oldVol, oldEulerVel, oldgGam, oldTKE, oldEps, vertPos,\
-	info, forces, contupd, keps_dkde, xsph, newPos, newVel, newVol, newEulerVel, newgGam, newTKE, newEps, newBoundElement, particleRangeEnd, step, dt, dt2, t, slength, influenceradius
+#define ARGS oldPos, particleHash, neibsList, cellStart, oldVel, oldVol, oldEulerVel, oldgGam, oldTKE, oldEps, vertPos, info, forces, contupd, keps_dkde, xsph, newPos, newVel, newVol, newEulerVel, newgGam, newTKE, newEps, newBoundElement, particleRangeEnd, step, dt, dt2, t, slength, influenceradius
 
 	if (step == 1) {
 		cueuler::eulerDevice<sph_formulation, boundarytype, kerneltype, simflags><<< numBlocks, numThreads >>>(ARGS);
