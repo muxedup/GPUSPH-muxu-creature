@@ -1544,31 +1544,6 @@ saSegmentBoundaryConditions(			float4*		oldPos,
 				// for solid boundaries we have de/dn = 4 0.09^0.075 k^1.5/(0.41 r)
 				oldEps[index] = fmax(sumeps/alpha,1e-5f); // eps should never be 0
 		}
-		// non-open boundaries
-		else {
-			alpha = fmax(alpha, 0.1f*gam); // avoid division by 0
-			// density condition
-			oldVel[index].w = fmax(sumrho/alpha,d_rho0[fluid_num(info)]);
-			// k-epsilon boundary conditions
-			if (oldTKE) {
-				// k condition
-				oldTKE[index] = sumtke/alpha;
-				// eulerian velocity on the wall
-				eulerVel = (	oldEulerVel[vertXidx] +
-								oldEulerVel[vertYidx] +
-								oldEulerVel[vertZidx] )/3.0f;
-				// ensure that velocity is normal to segment normal
-				eulerVel -= dot3(eulerVel,normal)*normal;
-				oldEulerVel[index] = eulerVel;
-			}
-			// if k-epsilon is not used but oldEulerVel is present (for open boundaries) set it to 0
-			else if (oldEulerVel)
-				oldEulerVel[index] = make_float4(0.0f);
-			// epsilon condition
-			if (oldEps)
-				// for solid boundaries we have de/dn = 4 0.09^0.075 k^1.5/(0.41 r)
-				oldEps[index] = fmax(sumeps/alpha,1e-5f); // eps should never be 0
-		}
 
 		// Compute the Riemann Invariants for I/O conditions
 		if (IO_BOUNDARY(info) && !CORNER(info)) {
