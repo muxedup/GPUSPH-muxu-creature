@@ -13,7 +13,9 @@ The file represents particle and other state.
 typedef unsigned int uint;
 typedef unsigned long ulong;
 
-using namespace std;
+using std::ifstream;
+using std::ofstream;
+
 
 /**
 HotFile header encoding.

@@ -35,6 +35,11 @@
 
 #include "Object.h"
 
+using std::runtime_error;
+using std::stringstream;
+using std::ifstream;
+using std::ios;
+
 /* A triangle in the mesh. It features a normal,
  * three vertices and a generic unsigned integer attribute
  * (typically used for material/color, which we don't use).

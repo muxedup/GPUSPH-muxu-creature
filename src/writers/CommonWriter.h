@@ -47,7 +47,8 @@
 
 #include "Writer.h"
 
-using namespace std;
+using std::ofstream;
+using std::ostream;
 
 class CommonWriter : public Writer
 {

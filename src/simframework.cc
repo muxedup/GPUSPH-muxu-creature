@@ -25,6 +25,8 @@
 
 #include "simframework.h"
 
+using std::make_pair;
+
 // Filters are run at the beginning of each iteration whose number is an exact
 // multiple of the filter frequency. We also want to ensure that filters are run
 // in order (from lowest-valued type to highest-valued type). Therefore, whenever a new

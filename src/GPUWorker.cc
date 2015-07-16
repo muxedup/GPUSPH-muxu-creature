@@ -39,6 +39,8 @@
 // UINT_MAX
 #include "limits.h"
 
+using std::invalid_argument;
+
 GPUWorker::GPUWorker(GlobalData* _gdata, devcount_t _deviceIndex) :
 	gdata(_gdata),
 	m_simframework(gdata->simframework),

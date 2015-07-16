@@ -53,8 +53,11 @@
 struct GlobalData;
 class Problem;
 
-using namespace std;
-
+using std::vector;
+using std::map;
+using std::ofstream;
+using std::string;
+using std::pair;
 // Writer types. Define new ones here and remember to include the corresponding
 // header in Writer.cc and the switch case in the implementation of Writer::Create
 

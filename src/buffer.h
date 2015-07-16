@@ -36,6 +36,11 @@
 #include "buffer_traits.h"
 #include "buffer_alloc_policy.h"
 
+using std::map;
+using std::set;
+using std::iterator;
+using std::runtime_error;
+
 /* Base class for the Buffer template class.
  * The base pointer is a pointer to pointer to allow easy management
  * of double-(or more)-buffered arrays.

@@ -39,6 +39,11 @@
 #include "Writer.h"
 #include "HotWriter.h"
 
+using std::stringstream;
+using std::cout;
+using std::endl;
+using std::cerr;
+
 WriterMap Writer::m_writers = WriterMap();
 bool Writer::m_forced = false;
 

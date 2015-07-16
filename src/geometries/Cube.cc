@@ -31,7 +31,7 @@
 #include "Cube.h"
 #include "Rect.h"
 
-using namespace std;
+
 
 /// Empty constructor
 /*! Return a cube with all class variables set to 0.

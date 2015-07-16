@@ -55,6 +55,9 @@
 #define BLOCK_SIZE_IOBOUND	256
 
 typedef std::vector<vertexinfo> VertexVect;
+using std::cerr;
+using std::string;
+using std::isfinite;
 
 // forward declaration. If a class wants to actually use
 // the callback writer it should include CallbackWriter.h
@@ -127,7 +130,7 @@ typedef std::vector<MovingBodyData *> MovingBodiesVect;
 // not including GlobalData.h since it needs the complete definition of the Problem class
 struct GlobalData;
 
-using namespace std;
+
 
 class Problem {
 	private:

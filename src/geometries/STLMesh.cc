@@ -27,6 +27,7 @@
 
 #include <cfloat>
 #include <cstring>
+#include <cmath>
 
 #include <iostream>
 #include <fstream>
@@ -36,7 +37,6 @@
 
 #include "STLMesh.h"
 
-using namespace std;
 
 void
 STLMesh::reset_bounds(void)

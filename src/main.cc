@@ -44,6 +44,11 @@
 #include "compute_select.opt"
 #include "hash_key_size_select.opt"
 
+using std::cout;
+using std::endl;
+using std::invalid_argument;
+using std::cerr;
+
 void show_version()
 {
 	static const char dbg_or_rel[] =

@@ -4,8 +4,6 @@
 #include "Writer.h"
 #include "HotFile.h"
 
-using namespace std;
-
 /**
 A Writer class used for hot-starting a simulation.
 Hot-starting means restarting a stopped simulation from a known point.  The

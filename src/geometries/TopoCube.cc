@@ -37,7 +37,12 @@
 #include "Vector.h"
 #include "Rect.h"
 
-using namespace std;
+using std::stringstream;
+using std::ifstream;
+using std::string;
+using std::runtime_error;
+using std::cout;
+using std::endl;
 
 TopoCube::TopoCube(void)
 {

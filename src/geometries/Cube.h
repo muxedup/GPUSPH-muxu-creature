@@ -40,6 +40,8 @@
 
 #include "deprecation.h"
 
+using std::vector;
+
 //! Cube object class
 /*!
  *	The cube class defines the cube object and implements all the
