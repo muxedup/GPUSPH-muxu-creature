@@ -23,7 +23,7 @@ double waveDispersion::calc(double wave_period, double water_depth) {
 	
 	calcDisp();
 	
-	return this.k;
+	return this->k;
 }
 
 void waveDispersion::calcDisp() {

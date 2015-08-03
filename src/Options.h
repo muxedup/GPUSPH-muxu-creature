@@ -31,6 +31,7 @@
 #include <sstream> // for de-serialization of option values
 #include <map> // unordered_map would be faster, but it's C++11
 
+
 // arbitrary problem options are allowed, stored in
 // a string -> string map, and deserialized on retrieval.
 typedef std::map<std::string, std::string> OptionMap;

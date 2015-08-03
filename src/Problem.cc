@@ -29,7 +29,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
-#include <cmath>
+//#include <cmath>
 #include <time.h>
 #include <sys/types.h>
 #include <sys/stat.h>
