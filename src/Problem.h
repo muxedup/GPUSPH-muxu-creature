@@ -58,7 +58,7 @@
 typedef std::vector<vertexinfo> VertexVect;
 using std::cerr;
 using std::string;
-using std::isfinite;
+//using std::isfinite;
 
 // forward declaration. If a class wants to actually use
 // the callback writer it should include CallbackWriter.h
@@ -277,7 +277,7 @@ class Problem {
 
 		double set_deltap(const double dflt)
 		{
-			if (isfinite((double) m_options->deltap))
+			if (std::isfinite((double) m_options->deltap))
 				m_deltap = m_options->deltap;
 			else
 				m_deltap = dflt;

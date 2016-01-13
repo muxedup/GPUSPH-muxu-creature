@@ -21,6 +21,8 @@
 
 //#define USE_PLANES 0
 
+using std::isfinite;
+
 XProblem::XProblem(GlobalData *_gdata) : Problem(_gdata)
 {
 	// *** XProblem initialization

@@ -52,6 +52,8 @@
 
 #define MAXKASINDEX 10
 
+using std::isfinite;
+
 texture<float, 2, cudaReadModeElementType> demTex;	// DEM
 
 /** \namespace cuforces

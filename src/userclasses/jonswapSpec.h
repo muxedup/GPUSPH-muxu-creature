@@ -6,7 +6,8 @@
 #include <iterator>
 #include <iostream>
 #include <cmath>
-#include <random>
+#include <time.h>
+//#include <random>
 
 
 using std::ostream;
@@ -14,9 +15,9 @@ using std::cout;
 using std::endl;
 using std::vector;
 using std::set;
-using std::random_device;
-using std::normal_distribution;
-using std::isfinite;
+//using std::random_device;
+//using std::normal_distribution;
+//using std::isfinite;
 
 class jonswapSpec
 {

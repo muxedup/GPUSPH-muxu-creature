@@ -151,7 +151,7 @@ enum ParticleFlag {
 // mass to Not-a-Number.
 
 // a particle is active if its mass is finite
-#define ACTIVE(p)	(isfinite((p).w))
+#define ACTIVE(p)	(std::isfinite((p).w))
 #define INACTIVE(p)	(!ACTIVE(p))
 
 // disable a particle by zeroing its mass
