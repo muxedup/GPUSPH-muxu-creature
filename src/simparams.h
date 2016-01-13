@@ -7,7 +7,7 @@
 
     Johns Hopkins University, Baltimore, MD
 
-    This file is part of GPUSPH.
+    This file is part of GPUSPH.
 
     GPUSPH is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -30,11 +30,11 @@
 
 #include <vector>
 #include <stdexcept>
-#include "Point.h"
+#include "particledefine.h"
 #include "simflags.h"
 #include "deprecation.h"
 
-typedef std::vector<double3> GageList;
+typedef std::vector<double4> GageList;
 
 typedef struct SimParams {
 	// Options that are set via SimFramework.
@@ -57,12 +57,12 @@ typedef struct SimParams {
 	float			dtadaptfactor;			// safety factor in the adaptive time step formula
 	uint			buildneibsfreq;			// frequency (in iterations) of neib list rebuilding
 
+	float			rhodiffcoeff;			//< coefficient for Colagrossi & Molteni 2009 CPC density diffusion
+
 	float			ferrari;				// coefficient for Ferrari correction
 	float			ferrariLengthScale;		// length scale for Ferrari correction
 
 	bool			gcallback;				// true if using a variable gravity in problem
-	bool			csvtestpoints;			// true to dump the testpoints also in CSV files
-	bool			csvsimplegages;			// true to dump the gages also in CSV files
 	bool			calc_energy;			// true if we want to compute system energy at save time
 	GageList		gage;					// water gages
 	uint			numODEbodies;			// number of bodies which movmement is computed by ODE
@@ -106,12 +106,12 @@ typedef struct SimParams {
 		dtadaptfactor(0.3f),
 		buildneibsfreq(10),
 
+		rhodiffcoeff(0.1),
+
 		ferrari(NAN),
 		ferrariLengthScale(NAN),
 
 		gcallback(false),
-		csvtestpoints(false),
-		csvsimplegages(false),
 		calc_energy(true),
 		numforcesbodies(0),
 		numbodies(0),
@@ -164,6 +164,12 @@ typedef struct SimParams {
 
 		return influenceRadius;
 	}
+
+	/// return the number of layers of particles necessary
+	/// to cover the influence radius
+	inline int
+	get_influence_layers() const
+	{ return (int)ceil(sfactor*kernelradius); }
 
 } SimParams;
 

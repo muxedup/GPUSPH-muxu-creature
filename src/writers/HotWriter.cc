@@ -27,7 +27,7 @@ bool HotWriter::need_write(double t) const {
 	bool would_write = Writer::need_write(t);
 	/* but then delay write until the next buildneibs */
 	if (would_write)
-		return ((gdata->iterations % gdata->problem->m_simparams->buildneibsfreq) == 0);
+		return ((gdata->iterations % gdata->problem->simparams()->buildneibsfreq) == 0);
 	return false;
 }
 
@@ -36,7 +36,7 @@ void HotWriter::write(uint numParts, const BufferList &buffers,
 
 	// generate filename with iterative integer
 	ofstream out;
-	string filename = open_data_file(out, "hot", next_filenum());
+	string filename = open_data_file(out, "hot", current_filenum());
 
 	// save the filename in order to manage removing unwanted files
 	_current_filenames.push_back(m_dirname + "/" + filename);

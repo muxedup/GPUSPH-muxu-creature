@@ -7,7 +7,7 @@
 
     Johns Hopkins University, Baltimore, MD
 
-    This file is part of GPUSPH.
+    This file is part of GPUSPH.
 
     GPUSPH is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -26,7 +26,7 @@
 // ostringstream
 #include <sstream>
 // FLT_MAX
-#include <float.h>
+#include <cfloat>
 
 #include "GPUWorker.h"
 #include "Problem.h"
@@ -43,25 +43,38 @@ using std::invalid_argument;
 
 GPUWorker::GPUWorker(GlobalData* _gdata, devcount_t _deviceIndex) :
 	gdata(_gdata),
-	m_simframework(gdata->simframework),
 	neibsEngine(gdata->simframework->getNeibsEngine()),
 	viscEngine(gdata->simframework->getViscEngine()),
 	forcesEngine(gdata->simframework->getForcesEngine()),
 	integrationEngine(gdata->simframework->getIntegrationEngine()),
 	bcEngine(gdata->simframework->getBCEngine()),
 	filterEngines(gdata->simframework->getFilterEngines()),
-	postProcEngines(gdata->simframework->getPostProcEngines())
+	postProcEngines(gdata->simframework->getPostProcEngines()),
+	m_simframework(gdata->simframework),
+	m_dCellStart(NULL),
+	m_dCellEnd(NULL),
+	m_dRbForces(NULL),
+	m_dRbNum(NULL),
+	m_hCompactDeviceMap(NULL),
+	m_dCompactDeviceMap(NULL),
+	m_dSegmentStart(NULL),
+	m_dIOwaterdepth(NULL),
+	m_dNewNumParticles(NULL),
+	m_asyncH2DCopiesStream(0),
+	m_asyncD2HCopiesStream(0),
+	m_asyncPeerCopiesStream(0),
+	m_halfForcesEvent(0)
 {
 	m_deviceIndex = _deviceIndex;
 	m_cudaDeviceNumber = gdata->device[m_deviceIndex];
 
 	m_globalDeviceIdx = GlobalData::GLOBAL_DEVICE_ID(gdata->mpi_rank, _deviceIndex);
 
-	printf("Global device id: %d (%d)\n", m_globalDeviceIdx, gdata->totDevices);
+	printf("Thread 0x%zx global device id: %d (%d)\n", pthread_self(), m_globalDeviceIdx, gdata->totDevices);
 
 	// we know that GPUWorker is initialized when Problem was already
-	m_simparams = gdata->problem->get_simparams();
-	m_physparams = gdata->problem->get_physparams();
+	m_simparams = gdata->problem->simparams();
+	m_physparams = gdata->problem->physparams();
 
 	// we also know Problem::fillparts() has already been called
 	m_numInternalParticles = m_numParticles = gdata->s_hPartsPerDevice[m_deviceIndex];
@@ -683,10 +696,11 @@ void GPUWorker::transferBurstsSizes()
 					receivedOneNonEmptyCellInBurst = true;
 				}
 				m_bursts[i].numParticles += numPartsInCell;
-				if (m_deviceIndex == 1 && gdata->iterations == 30 && false)
-					printf(" BURST %u, incr. parts from %u to %u (+%u) because of cell %u\n", i,
+#if 0 // DBG
+				printf(" BURST %u, incr. parts from %u to %u (+%u) because of cell %u\n", i,
 						   m_bursts[i].numParticles - numPartsInCell, m_bursts[i].numParticles,
 							numPartsInCell, lin_cell );
+#endif
 			}
 
 		} // iterate on cells of the current burst
@@ -1294,8 +1308,20 @@ void GPUWorker::downloadNewNumParticles()
 	if (activeParticles != m_numParticles) {
 		// if for debug reasons we need to print the change in numParts for each device, uncomment the following:
 		// printf("  Dev. index %u: particles: %d => %d\n", m_deviceIndex, m_numParticles, activeParticles);
-		if (activeParticles > m_numParticles)
-			gdata->highestDevId[m_deviceIndex] += (activeParticles-m_numParticles)*gdata->totDevices;
+
+		// Increment the highest particle ID that will be used as offset by the particle creation function,
+		// checking for overflow
+		if (activeParticles > m_numParticles) {
+			uint id_delta = (activeParticles-m_numParticles)*gdata->totDevices;
+			if (UINT_MAX - id_delta < gdata->highestDevId[m_deviceIndex]) {
+				fprintf(stderr, " FATAL: possible ID overflow in particle creation after iteration %lu on device %d - requesting quit...\n",
+					gdata->iterations, m_globalDeviceIdx);
+				gdata->quit_request = true;
+			}
+
+			gdata->highestDevId[m_deviceIndex] += id_delta;
+		}
+
 		m_numParticles = activeParticles;
 		// In multi-device simulations, m_numInternalParticles is updated in dropExternalParticles() and updateSegments();
 		// it should not be updated here. Single-device simulations, instead, have it updated here.
@@ -1325,6 +1351,7 @@ void GPUWorker::downloadNewNumParticles()
 void GPUWorker::uploadNewNumParticles()
 {
 	// uploading even if empty (usually not, right after append)
+	// TODO move this to the bcEngine too
 	CUDA_SAFE_CALL(cudaMemcpy(m_dNewNumParticles, &m_numParticles, sizeof(uint), cudaMemcpyHostToDevice));
 }
 
@@ -1341,9 +1368,8 @@ void GPUWorker::uploadGravity()
 void GPUWorker::uploadPlanes()
 {
 	// check if planes > 0 (already checked before calling?)
-	if (gdata->numPlanes > 0)
-		forcesEngine->setplanes(gdata->numPlanes, gdata->s_hPlaneNormal,
-			gdata->s_hPlanePointGridPos, gdata->s_hPlanePointLocalPos);
+	if (gdata->s_hPlanes.size() > 0)
+		forcesEngine->setplanes(gdata->s_hPlanes);
 }
 
 
@@ -1524,61 +1550,33 @@ void* GPUWorker::simulationThread(void *ptr) {
 	const unsigned int cudaDeviceNumber = instance->getCUDADeviceNumber();
 	const unsigned int deviceIndex = instance->getDeviceIndex();
 
-	instance->setDeviceProperties( checkCUDA(gdata, deviceIndex) );
+	try {
 
-	// allow peers to access the device memory (for cudaMemcpyPeer[Async])
-	instance->enablePeerAccess();
+		instance->setDeviceProperties( checkCUDA(gdata, deviceIndex) );
 
-	// compute #parts to allocate according to the free memory on the device
-	// must be done before uploading constants since some constants
-	// (e.g. those for neibslist traversal) depend on the number of particles
-	// allocated
-	instance->computeAndSetAllocableParticles();
+		instance->initialize();
 
-	// upload constants (PhysParames, some SimParams)
-	instance->uploadConstants();
+		gdata->threadSynchronizer->barrier(); // end of INITIALIZATION ***
 
-	// upload planes, if any
-	instance->uploadPlanes();
+		// here GPUSPH::initialize is over and GPUSPH::runSimulation() is called
 
-	// allocate CPU and GPU arrays
-	instance->allocateHostBuffers();
-	instance->allocateDeviceBuffers();
-	instance->printAllocatedMemory();
+		gdata->threadSynchronizer->barrier(); // begins UPLOAD ***
 
-	// upload centers of gravity of the bodies
-	instance->uploadEulerBodiesCentersOfGravity();
-	instance->uploadForcesBodiesCentersOfGravity();
+		// if anything else failed (e.g. another worker was assigned an
+		// non-existent device number and failed to complete initialize()
+		// correctly), we shouldn't do anything. So check that keep_going is still true
+		if (gdata->keep_going)
+			instance->uploadSubdomain();
 
-	// create and upload the compact device map (2 bits per cell)
-	if (MULTI_DEVICE) {
-		instance->createCompactDeviceMap();
-		instance->computeCellBursts();
-		instance->uploadCompactDeviceMap();
-	}
+		gdata->threadSynchronizer->barrier();  // end of UPLOAD, begins SIMULATION ***
 
-	// TODO: here set_reduction_params() will be called (to be implemented in this class). These parameters can be device-specific.
+		bool dbg_step_printf = false;
 
-	// init streams for async memcpys (only useful for multigpu?)
-	instance->createEventsAndStreams();
-
-	gdata->threadSynchronizer->barrier(); // end of INITIALIZATION ***
-
-	// here GPUSPH::initialize is over and GPUSPH::runSimulation() is called
-
-	gdata->threadSynchronizer->barrier(); // begins UPLOAD ***
-
-	instance->uploadSubdomain();
-
-	gdata->threadSynchronizer->barrier();  // end of UPLOAD, begins SIMULATION ***
-
-	bool dbg_step_printf = false;
-
-	// TODO
-	// Here is a copy-paste from the CPU thread worker of branch cpusph, as a canvas
-	while (gdata->keep_going) {
-		switch (gdata->nextCommand) {
-			// logging here?
+		// TODO
+		// Here is a copy-paste from the CPU thread worker of branch cpusph, as a canvas
+		while (gdata->keep_going) {
+			switch (gdata->nextCommand) {
+				// logging here?
 			case IDLE:
 				break;
 			case SWAP_BUFFERS:
@@ -1685,10 +1683,6 @@ void* GPUWorker::simulationThread(void *ptr) {
 				if (dbg_step_printf) printf(" T %d issuing IDENTIFY_CORNER_VERTICES\n", deviceIndex);
 				instance->kernel_saIdentifyCornerVertices();
 				break;
-			case FIND_CLOSEST_VERTEX:
-				if (dbg_step_printf) printf(" T %d issuing FIND_CLOSEST_VERTEX\n", deviceIndex);
-				instance->kernel_saFindClosestVertex();
-				break;
 			case COMPUTE_DENSITY:
 				if (dbg_step_printf) printf(" T %d issuing COMPUTE_DENSITY\n", deviceIndex);
 				instance->kernel_compute_density();
@@ -1729,6 +1723,10 @@ void* GPUWorker::simulationThread(void *ptr) {
 				if (dbg_step_printf) printf(" T %d issuing IMPOSE_OPEN_BOUNDARY_CONDITION\n", deviceIndex);
 				instance->kernel_imposeBoundaryCondition();
 				break;
+			case INIT_GAMMA:
+				if (dbg_step_printf) printf(" T %d issuing INIT_GAMMA\n", deviceIndex);
+				instance->kernel_initGamma();
+				break;
 			case QUIT:
 				if (dbg_step_printf) printf(" T %d issuing QUIT\n", deviceIndex);
 				// actually, setting keep_going to false and unlocking the barrier should be enough to quit the cycle
@@ -1736,35 +1734,89 @@ void* GPUWorker::simulationThread(void *ptr) {
 			default:
 				fprintf(stderr, "FATAL: command (%d) issued on device %d is not implemented\n", gdata->nextCommand, deviceIndex);
 				exit(1);
-		}
-		if (gdata->keep_going) {
-			/*
-			// example usage of checkPartValBy*()
-			// alternatively, can be used in the previous switch construct, to check who changes what
-			if (gdata->iterations >= 10) {
+			}
+			if (gdata->keep_going) {
+				/*
+				// example usage of checkPartValBy*()
+				// alternatively, can be used in the previous switch construct, to check who changes what
+				if (gdata->iterations >= 10) {
 				dbg_step_printf = true; // optional
 				instance->checkPartValByIndex("test", 0);
+				}
+				*/
+				// the first barrier waits for the main thread to set the next command; the second is to unlock
+				gdata->threadSynchronizer->barrier();  // CYCLE BARRIER 1
+				gdata->threadSynchronizer->barrier();  // CYCLE BARRIER 2
 			}
-			*/
-			// the first barrier waits for the main thread to set the next command; the second is to unlock
-			gdata->threadSynchronizer->barrier();  // CYCLE BARRIER 1
-			gdata->threadSynchronizer->barrier();  // CYCLE BARRIER 2
 		}
+	} catch (std::exception &e) {
+		cerr << e.what() << endl;
+		const_cast<GlobalData*>(gdata)->keep_going = false;
 	}
 
 	gdata->threadSynchronizer->barrier();  // end of SIMULATION, begins FINALIZATION ***
 
-	// destroy streams
-	instance->destroyEventsAndStreams();
-
-	// deallocate buffers
-	instance->deallocateHostBuffers();
-	instance->deallocateDeviceBuffers();
-	// ...what else?
+	try {
+		instance->finalize();
+	} catch (std::exception &e) {
+		// if anything goes wrong here, there isn't much we can do,
+		// so just show the error and carry on
+		cerr << e.what() << endl;
+	}
 
 	gdata->threadSynchronizer->barrier();  // end of FINALIZATION ***
 
 	pthread_exit(NULL);
+}
+
+void GPUWorker::initialize()
+{
+	// allow peers to access the device memory (for cudaMemcpyPeer[Async])
+	enablePeerAccess();
+
+	// compute #parts to allocate according to the free memory on the device
+	// must be done before uploading constants since some constants
+	// (e.g. those for neibslist traversal) depend on the number of particles
+	// allocated
+	computeAndSetAllocableParticles();
+
+	// upload constants (PhysParames, some SimParams)
+	uploadConstants();
+
+	// upload planes, if any
+	uploadPlanes();
+
+	// allocate CPU and GPU arrays
+	allocateHostBuffers();
+	allocateDeviceBuffers();
+	printAllocatedMemory();
+
+	// upload centers of gravity of the bodies
+	uploadEulerBodiesCentersOfGravity();
+	uploadForcesBodiesCentersOfGravity();
+
+	// create and upload the compact device map (2 bits per cell)
+	if (MULTI_DEVICE) {
+		createCompactDeviceMap();
+		computeCellBursts();
+		uploadCompactDeviceMap();
+
+		// init streams for async memcpys
+		createEventsAndStreams();
+	}
+
+	// TODO: here set_reduction_params() will be called (to be implemented in this class). These parameters can be device-specific.
+}
+
+void GPUWorker::finalize()
+{
+	// destroy streams
+	destroyEventsAndStreams();
+
+	// deallocate buffers
+	deallocateHostBuffers();
+	deallocateDeviceBuffers();
+	// ...what else?
 }
 
 void GPUWorker::kernel_calcHash()
@@ -1791,8 +1843,7 @@ void GPUWorker::kernel_calcHash()
 					m_numParticles);
 	else
 		neibsEngine->calcHash(
-			// TODO FIXME POS is in/out, but it's taken on the READ position
-					(float4*)bufread.getData<BUFFER_POS>(),
+					bufwrite.getData<BUFFER_POS>(),
 					bufwrite.getData<BUFFER_HASH>(),
 					bufwrite.getData<BUFFER_PARTINDEX>(),
 					bufread.getData<BUFFER_INFO>(),
@@ -1807,11 +1858,9 @@ void GPUWorker::kernel_sort()
 	// is the device empty? (unlikely but possible before LB kicks in)
 	if (numPartsToElaborate == 0) return;
 
-	BufferList &bufwrite = *m_dBuffers.getWriteBufferList();
-
 	neibsEngine->sort(
-			bufwrite.getData<BUFFER_HASH>(),
-			bufwrite.getData<BUFFER_PARTINDEX>(),
+			m_dBuffers.getReadBufferList(),
+			m_dBuffers.getWriteBufferList(),
 			numPartsToElaborate);
 }
 
@@ -2113,7 +2162,7 @@ void GPUWorker::kernel_forces_async_complete()
 void GPUWorker::kernel_forces()
 {
 	if (!gdata->only_internal)
-		printf("WARNING: forces kernel called with only_internal == true, ignoring flag!\n");
+		printf("WARNING: forces kernel called with only_internal == false, ignoring flag!\n");
 
 	uint numPartsToElaborate = m_particleRangeEnd;
 
@@ -2223,18 +2272,36 @@ void GPUWorker::kernel_imposeBoundaryCondition()
 	BufferList &bufwrite = *m_dBuffers.getWriteBufferList();
 
 	gdata->problem->imposeBoundaryConditionHost(
-			bufwrite.getData<BUFFER_VEL>(),
-			bufwrite.getData<BUFFER_EULERVEL>(),
-			bufwrite.getData<BUFFER_TKE>(),
-			bufwrite.getData<BUFFER_EPSILON>(),
-			bufread.getData<BUFFER_INFO>(),
-			bufread.getData<BUFFER_POS>(),
-			(m_simparams->simflags & ENABLE_WATER_DEPTH) ? m_dIOwaterdepth : NULL,
-			gdata->t,
-			m_numParticles,
-			m_simparams->numOpenBoundaries,
-			numPartsToElaborate,
-			bufread.getData<BUFFER_HASH>());
+		m_dBuffers.getWriteBufferList(),
+		m_dBuffers.getReadBufferList(),
+		(m_simparams->simflags & ENABLE_WATER_DEPTH) ? m_dIOwaterdepth : NULL,
+		gdata->t,
+		m_numParticles,
+		m_simparams->numOpenBoundaries,
+		numPartsToElaborate);
+
+}
+
+void GPUWorker::kernel_initGamma()
+{
+	uint numPartsToElaborate = m_numParticles;
+
+	// is the device empty? (unlikely but possible before LB kicks in)
+	if (numPartsToElaborate == 0) return;
+
+	BufferList const& bufread = *m_dBuffers.getReadBufferList();
+	BufferList &bufwrite = *m_dBuffers.getWriteBufferList();
+
+	bcEngine->initGamma(
+		m_dBuffers.getWriteBufferList(),
+		m_dBuffers.getReadBufferList(),
+		m_numParticles,
+		m_simparams->slength,
+		gdata->problem->m_deltap,
+		m_simparams->influenceRadius,
+		m_simparams->epsilon,
+		m_dCellStart,
+		numPartsToElaborate);
 
 }
 
@@ -2290,8 +2357,8 @@ void GPUWorker::kernel_postprocess()
 		m_dCellStart,
 		m_numParticles,
 		numPartsToElaborate,
-		m_simparams->slength,
-		m_simparams->influenceRadius);
+		m_deviceIndex,
+		gdata);
 }
 
 void GPUWorker::kernel_compute_density()
@@ -2430,6 +2497,8 @@ void GPUWorker::kernel_saVertexBoundaryConditions()
 	bool initStep = (gdata->commandFlags & INITIALIZATION_STEP);
 	bool firstStep = (gdata->commandFlags & INTEGRATOR_STEP_1);
 
+	bcEngine->updateNewIDsOffset(gdata->highestDevId[m_deviceIndex]);
+
 	BufferList const& bufread = *m_dBuffers.getReadBufferList();
 	BufferList &bufwrite = *m_dBuffers.getWriteBufferList();
 
@@ -2444,6 +2513,7 @@ void GPUWorker::kernel_saVertexBoundaryConditions()
 				bufwrite.getData<BUFFER_CONTUPD>(),
 				bufread.getData<BUFFER_BOUNDELEMENTS>(),
 				bufwrite.getData<BUFFER_VERTICES>(),
+				bufread.getRawPtr<BUFFER_VERTPOS>(),
 				bufread.getData<BUFFER_VERTIDINDEX>(),
 
 				// TODO FIXME INFO and HASH are in/out, but it's taken on the READ position
@@ -2461,8 +2531,8 @@ void GPUWorker::kernel_saVertexBoundaryConditions()
 				gdata->problem->m_deltap,
 				m_simparams->slength,
 				m_simparams->influenceRadius,
-				gdata->highestDevId[m_deviceIndex],
 				initStep,
+				!gdata->clOptions->resume_fname.empty(),
 				m_globalDeviceIdx,
 				gdata->totDevices);
 }
@@ -2489,28 +2559,6 @@ void GPUWorker::kernel_saIdentifyCornerVertices()
 				numPartsToElaborate,
 				gdata->problem->m_deltap,
 				m_simparams->epsilon);
-}
-
-void GPUWorker::kernel_saFindClosestVertex()
-{
-	uint numPartsToElaborate = (gdata->only_internal ? m_particleRangeEnd : m_numParticles);
-
-	// is the device empty? (unlikely but possible before LB kicks in)
-	if (numPartsToElaborate == 0) return;
-
-	BufferList const& bufread = *m_dBuffers.getReadBufferList();
-	BufferList &bufwrite = *m_dBuffers.getWriteBufferList();
-
-	bcEngine->saFindClosestVertex(
-				bufread.getData<BUFFER_POS>(),
-				bufwrite.getData<BUFFER_INFO>(),
-				bufwrite.getData<BUFFER_VERTICES>(),
-				bufread.getData<BUFFER_VERTIDINDEX>(),
-				bufread.getData<BUFFER_HASH>(),
-				m_dCellStart,
-				bufread.getData<BUFFER_NEIBSLIST>(),
-				m_numParticles,
-				numPartsToElaborate);
 }
 
 void GPUWorker::kernel_disableOutgoingParts()
@@ -2542,8 +2590,8 @@ void GPUWorker::uploadConstants()
 		m_numAllocatedParticles, m_simparams->maxneibsnum, m_simparams->slength);
 	neibsEngine->setconstants(m_simparams, m_physparams, gdata->worldOrigin, gdata->gridSize, gdata->cellSize,
 		m_numAllocatedParticles);
-	if (m_simparams->simflags & ENABLE_INLET_OUTLET)
-		gdata->problem->setboundconstants(m_physparams, gdata->worldOrigin, gdata->gridSize, gdata->cellSize);
+	if(!postProcEngines.empty())
+		postProcEngines.begin()->second->setconstants(m_simparams, m_physparams, m_numAllocatedParticles);
 }
 
 // Auxiliary method for debugging purposes: downloads on the host one or multiple field values of

@@ -7,7 +7,7 @@
 
     Johns Hopkins University, Baltimore, MD
 
-    This file is part of GPUSPH.
+    This file is part of GPUSPH.
 
     GPUSPH is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -172,7 +172,7 @@ cflmax( const uint	n,
 	reducefmax(n, numThreads, numBlocks, cfl, tempCfl);
 
 	// check if kernel execution generated an error
-	CUT_CHECK_ERROR("fmax kernel execution failed");
+	KERNEL_CHECK_ERROR;
 
 	// TODO this can be done in just two calls
 	uint s = numBlocks;
@@ -182,7 +182,7 @@ cflmax( const uint	n,
 		getNumBlocksAndThreads(s, MAX_BLOCKS_FMAX, BLOCK_SIZE_FMAX, blocks, threads);
 
 		reducefmax(s, threads, blocks, tempCfl, tempCfl);
-		CUT_CHECK_ERROR("fmax kernel execution failed");
+		KERNEL_CHECK_ERROR;
 
 		s = (s + (threads*2-1)) / (threads*2);
 	}
@@ -250,6 +250,9 @@ struct CUDADensityHelper<kerneltype, SPH_GRENIER, boundarytype> {
 
 		cuforces::densityGrenierDevice<kerneltype, boundarytype>
 			<<<numBlocks, numThreads>>>(sigma, pos, vel, info, pHash, vol, cellStart, neibsList, numParticles, slength, influenceradius);
+
+		// check if kernel invocation generated an error
+		KERNEL_CHECK_ERROR;
 	}
 };
 
@@ -340,13 +343,15 @@ setconstants(const SimParams *simparams, const PhysParams *physparams,
 
 	CUDA_SAFE_CALL(cudaMemcpyToSymbol(cuforces::d_r0, &physparams->r0, sizeof(float)));
 	CUDA_SAFE_CALL(cudaMemcpyToSymbol(cuforces::d_epsartvisc, &physparams->epsartvisc, sizeof(float)));
-	CUDA_SAFE_CALL(cudaMemcpyToSymbol(cuforces::d_ewres, &physparams->ewres, sizeof(float)));
-	CUDA_SAFE_CALL(cudaMemcpyToSymbol(cuforces::d_nsres, &physparams->nsres, sizeof(float)));
-	CUDA_SAFE_CALL(cudaMemcpyToSymbol(cuforces::d_demdx, &physparams->demdx, sizeof(float)));
-	CUDA_SAFE_CALL(cudaMemcpyToSymbol(cuforces::d_demdy, &physparams->demdy, sizeof(float)));
+
+	CUDA_SAFE_CALL(cudaMemcpyToSymbol(cubounds::d_ewres, &physparams->ewres, sizeof(float)));
+	CUDA_SAFE_CALL(cudaMemcpyToSymbol(cubounds::d_nsres, &physparams->nsres, sizeof(float)));
+	CUDA_SAFE_CALL(cudaMemcpyToSymbol(cubounds::d_demdx, &physparams->demdx, sizeof(float)));
+	CUDA_SAFE_CALL(cudaMemcpyToSymbol(cubounds::d_demdy, &physparams->demdy, sizeof(float)));
 	float demdxdy = physparams->demdx*physparams->demdy;
-	CUDA_SAFE_CALL(cudaMemcpyToSymbol(cuforces::d_demdxdy, &demdxdy, sizeof(float)));
-	CUDA_SAFE_CALL(cudaMemcpyToSymbol(cuforces::d_demzmin, &physparams->demzmin, sizeof(float)));
+	CUDA_SAFE_CALL(cudaMemcpyToSymbol(cubounds::d_demdxdy, &demdxdy, sizeof(float)));
+	CUDA_SAFE_CALL(cudaMemcpyToSymbol(cubounds::d_demzmin, &physparams->demzmin, sizeof(float)));
+
 	CUDA_SAFE_CALL(cudaMemcpyToSymbol(cuforces::d_smagfactor, &physparams->smagfactor, sizeof(float)));
 	CUDA_SAFE_CALL(cudaMemcpyToSymbol(cuforces::d_kspsfactor, &physparams->kspsfactor, sizeof(float)));
 
@@ -355,9 +360,6 @@ setconstants(const SimParams *simparams, const PhysParams *physparams,
 		partsurf = physparams->r0*physparams->r0;
 		// partsurf = (6.0 - M_PI)*physparams->r0*physparams->r0/4;
 	CUDA_SAFE_CALL(cudaMemcpyToSymbol(cuforces::d_partsurf, &partsurf, sizeof(float)));
-
-	CUDA_SAFE_CALL(cudaMemcpyToSymbol(cuforces::d_cosconeanglefluid, &physparams->cosconeanglefluid, sizeof(float)));
-	CUDA_SAFE_CALL(cudaMemcpyToSymbol(cuforces::d_cosconeanglenonfluid, &physparams->cosconeanglenonfluid, sizeof(float)));
 
 	CUDA_SAFE_CALL(cudaMemcpyToSymbol(cuforces::d_objectobjectdf, &physparams->objectobjectdf, sizeof(float)));
 	CUDA_SAFE_CALL(cudaMemcpyToSymbol(cuforces::d_objectboundarydf, &physparams->objectboundarydf, sizeof(float)));
@@ -376,12 +378,16 @@ setconstants(const SimParams *simparams, const PhysParams *physparams,
 			}
 		}
 	}
-	CUDA_SAFE_CALL(cudaMemcpyToSymbol(cuforces::d_cell_to_offset, cell_to_offset, 27*sizeof(char3)));
+	CUDA_SAFE_CALL(cudaMemcpyToSymbol(cubounds::d_cell_to_offset, cell_to_offset, 27*sizeof(char3)));
 
-	CUDA_SAFE_CALL(cudaMemcpyToSymbol(cuforces::d_worldOrigin, &worldOrigin, sizeof(float3)));
-	CUDA_SAFE_CALL(cudaMemcpyToSymbol(cuforces::d_gridSize, &gridSize, sizeof(uint3)));
-	CUDA_SAFE_CALL(cudaMemcpyToSymbol(cuforces::d_cellSize, &cellSize, sizeof(float3)));
+	CUDA_SAFE_CALL(cudaMemcpyToSymbol(cubounds::d_worldOrigin, &worldOrigin, sizeof(float3)));
+	CUDA_SAFE_CALL(cudaMemcpyToSymbol(cubounds::d_gridSize, &gridSize, sizeof(uint3)));
+	CUDA_SAFE_CALL(cudaMemcpyToSymbol(cubounds::d_cellSize, &cellSize, sizeof(float3)));
+
 	CUDA_SAFE_CALL(cudaMemcpyToSymbol(cuforces::d_ferrari, &simparams->ferrari, sizeof(float)));
+
+	const float rhodiffcoeff = simparams->rhodiffcoeff*2*simparams->slength;
+	CUDA_SAFE_CALL(cudaMemcpyToSymbol(cuforces::d_rhodiffcoeff, &rhodiffcoeff, sizeof(float)));
 
 	CUDA_SAFE_CALL(cudaMemcpyToSymbol(cuforces::d_epsinterface, &physparams->epsinterface, sizeof(float)));
 }
@@ -424,12 +430,11 @@ getconstants(PhysParams *physparams)
 }
 
 void
-setplanes(int numPlanes, const float3 *planeNormal, const int3 *gridPos, const float3 *localPos)
+setplanes(std::vector<plane_t> const& planes)
 {
-	CUDA_SAFE_CALL(cudaMemcpyToSymbol(cuforces::d_planeNormal, planeNormal, numPlanes*sizeof(float3)));
-	CUDA_SAFE_CALL(cudaMemcpyToSymbol(cuforces::d_planePointGridPos, gridPos, numPlanes*sizeof(int3)));
-	CUDA_SAFE_CALL(cudaMemcpyToSymbol(cuforces::d_planePointLocalPos, localPos, numPlanes*sizeof(float3)));
-	CUDA_SAFE_CALL(cudaMemcpyToSymbol(cuforces::d_numplanes, &numPlanes, sizeof(uint)));
+	uint numPlanes = planes.size();
+	CUDA_SAFE_CALL(cudaMemcpyToSymbol(cubounds::d_numplanes, &numPlanes, sizeof(uint)));
+	CUDA_SAFE_CALL(cudaMemcpyToSymbol(cubounds::d_plane, &planes[0], numPlanes*sizeof(plane_t)));
 }
 
 void
@@ -575,7 +580,7 @@ dtreduce(	float	slength,
 	}
 
 	// check if last kernel invocation generated an error
-	CUT_CHECK_ERROR("Forces kernel execution failed");
+	KERNEL_CHECK_ERROR;
 
 	return dt;
 }
@@ -654,13 +659,14 @@ basicstep(
 	#endif
 
 	forces_params<kerneltype, sph_formulation, boundarytype, visctype, simflags> params(
-			forces, contupd, rbforces, rbtorques,
+			forces, rbforces, rbtorques,
 			pos, particleHash, cellStart, neibsList, fromParticle, toParticle,
 			deltap, slength, influenceradius, step,
 			cfl, cfl_Ds, cflTVisc, cflOffset,
 			xsph,
+			bufread->getData<BUFFER_VOLUME>(),
 			bufread->getData<BUFFER_SIGMA>(),
-			newGGam, vertPos, epsilon,
+			newGGam, contupd, vertPos, epsilon,
 			IOwaterdepth,
 			keps_dkde, turbvisc);
 
@@ -680,12 +686,12 @@ setDEM(const float *hDem, int width, int height)
 	CUDA_SAFE_CALL( cudaMallocArray( &dDem, &channelDesc, width, height ));
 	CUDA_SAFE_CALL( cudaMemcpyToArray( dDem, 0, 0, hDem, size, cudaMemcpyHostToDevice));
 
-	demTex.addressMode[0] = cudaAddressModeClamp;
-	demTex.addressMode[1] = cudaAddressModeClamp;
-	demTex.filterMode = cudaFilterModeLinear;
-	demTex.normalized = false;
+	cubounds::demTex.addressMode[0] = cudaAddressModeClamp;
+	cubounds::demTex.addressMode[1] = cudaAddressModeClamp;
+	cubounds::demTex.filterMode = cudaFilterModeLinear;
+	cubounds::demTex.normalized = false;
 
-	CUDA_SAFE_CALL( cudaBindTextureToArray(demTex, dDem, channelDesc));
+	CUDA_SAFE_CALL( cudaBindTextureToArray(cubounds::demTex, dDem, channelDesc));
 }
 
 void
@@ -838,7 +844,7 @@ struct CUDAViscEngineHelper<SPSVISC, kerneltype, boundarytype>
 		<<<numBlocks, numThreads, dummy_shared>>>(params);
 
 	// check if kernel invocation generated an error
-	CUT_CHECK_ERROR("SPS kernel execution failed");
+	KERNEL_CHECK_ERROR;
 
 	CUDA_SAFE_CALL(cudaUnbindTexture(infoTex));
 	CUDA_SAFE_CALL(cudaUnbindTexture(velTex));
@@ -941,7 +947,7 @@ struct CUDAFilterEngineHelper<SHEPARD_FILTER, kerneltype, boundarytype>
 		(pos, newVel, particleHash, cellStart, neibsList, particleRangeEnd, slength, influenceradius);
 
 	// check if kernel invocation generated an error
-	CUT_CHECK_ERROR("Shepard kernel execution failed");
+	KERNEL_CHECK_ERROR;
 
 	#if (__COMPUTE__ < 20)
 	CUDA_SAFE_CALL(cudaUnbindTexture(posTex));
@@ -988,7 +994,7 @@ struct CUDAFilterEngineHelper<MLS_FILTER, kerneltype, boundarytype>
 		(pos, newVel, particleHash, cellStart, neibsList, particleRangeEnd, slength, influenceradius);
 
 	// check if kernel invocation generated an error
-	CUT_CHECK_ERROR("Mls kernel execution failed");
+	KERNEL_CHECK_ERROR;
 
 	#if (__COMPUTE__ < 20)
 	CUDA_SAFE_CALL(cudaUnbindTexture(posTex));
@@ -1029,352 +1035,6 @@ public:
 };
 
 
-/// Post-processing engines
-
-// As with the viscengine and filter engines, we need a helper struct for the partial
-// specialization of process
-
-struct CUDAPostProcessEngineHelperDefaults
-{
-	static flag_t get_written_buffers(flag_t options)
-	{ return NO_FLAGS; }
-
-	static flag_t get_updated_buffers(flag_t options)
-	{ return NO_FLAGS; }
-};
-
-template<PostProcessType filtertype, KernelType kerneltype>
-struct CUDAPostProcessEngineHelper : public CUDAPostProcessEngineHelperDefaults
-{
-	static void process(
-				flag_t	options,
-		MultiBufferList::const_iterator bufread,
-		MultiBufferList::iterator bufwrite,
-		const	uint	*cellStart,
-				uint	numParticles,
-				uint	particleRangeEnd,
-				float	slength,
-				float	influenceradius);
-};
-
-template<KernelType kerneltype>
-struct CUDAPostProcessEngineHelper<VORTICITY, kerneltype>
-: public CUDAPostProcessEngineHelperDefaults
-{
-	static flag_t get_written_buffers(flag_t)
-	{ return BUFFER_VORTICITY; }
-
-	static void process(
-				flag_t	options,
-		MultiBufferList::const_iterator bufread,
-		MultiBufferList::iterator bufwrite,
-		const	uint	*cellStart,
-				uint	numParticles,
-				uint	particleRangeEnd,
-				float	slength,
-				float	influenceradius)
-	{
-		// thread per particle
-		uint numThreads = BLOCK_SIZE_CALCVORT;
-		uint numBlocks = div_up(particleRangeEnd, numThreads);
-
-		const float4 *pos = bufread->getData<BUFFER_POS>();
-		const float4 *vel = bufread->getData<BUFFER_VEL>();
-		const particleinfo *info = bufread->getData<BUFFER_INFO>();
-		const hashKey *particleHash = bufread->getData<BUFFER_HASH>();
-		const neibdata *neibsList = bufread->getData<BUFFER_NEIBSLIST>();
-
-		float3 *vort = bufwrite->getData<BUFFER_VORTICITY>();
-
-		#if (__COMPUTE__ < 20)
-		CUDA_SAFE_CALL(cudaBindTexture(0, posTex, pos, numParticles*sizeof(float4)));
-		#endif
-		CUDA_SAFE_CALL(cudaBindTexture(0, velTex, vel, numParticles*sizeof(float4)));
-		CUDA_SAFE_CALL(cudaBindTexture(0, infoTex, info, numParticles*sizeof(particleinfo)));
-
-		cuforces::calcVortDevice<kerneltype><<< numBlocks, numThreads >>>
-			(pos, vort, particleHash, cellStart, neibsList, particleRangeEnd, slength, influenceradius);
-
-		// check if kernel invocation generated an error
-		CUT_CHECK_ERROR("Vorticity kernel execution failed");
-
-		#if (__COMPUTE__ < 20)
-		CUDA_SAFE_CALL(cudaUnbindTexture(posTex));
-		#endif
-		CUDA_SAFE_CALL(cudaUnbindTexture(velTex));
-		CUDA_SAFE_CALL(cudaUnbindTexture(infoTex));
-	}
-};
-
-template<KernelType kerneltype>
-struct CUDAPostProcessEngineHelper<TESTPOINTS, kerneltype>
-: public CUDAPostProcessEngineHelperDefaults
-{
-	// buffers updated in-place
-	static flag_t get_updated_buffers(flag_t)
-	{ return BUFFER_VEL | BUFFER_TKE | BUFFER_EPSILON; }
-
-	static void process(
-				flag_t	options,
-		MultiBufferList::const_iterator bufread,
-		MultiBufferList::iterator bufwrite,
-		const	uint	*cellStart,
-				uint	numParticles,
-				uint	particleRangeEnd,
-				float	slength,
-				float	influenceradius)
-	{
-		// thread per particle
-		uint numThreads = BLOCK_SIZE_CALCTEST;
-		uint numBlocks = div_up(particleRangeEnd, numThreads);
-
-		const float4 *pos = bufread->getData<BUFFER_POS>();
-		const particleinfo *info = bufread->getData<BUFFER_INFO>();
-		const hashKey *particleHash = bufread->getData<BUFFER_HASH>();
-		const neibdata *neibsList = bufread->getData<BUFFER_NEIBSLIST>();
-
-		/* in-place update! */
-		float4 *newVel = const_cast<float4*>(bufread->getData<BUFFER_VEL>());
-		float *newTke = const_cast<float*>(bufread->getData<BUFFER_TKE>());
-		float *newEpsilon = const_cast<float*>(bufread->getData<BUFFER_EPSILON>());
-
-		#if (__COMPUTE__ < 20)
-		CUDA_SAFE_CALL(cudaBindTexture(0, posTex, pos, numParticles*sizeof(float4)));
-		#endif
-		CUDA_SAFE_CALL(cudaBindTexture(0, velTex, newVel, numParticles*sizeof(float4)));
-		if (newTke)
-			CUDA_SAFE_CALL(cudaBindTexture(0, keps_kTex, newTke, numParticles*sizeof(float)));
-		if (newEpsilon)
-			CUDA_SAFE_CALL(cudaBindTexture(0, keps_eTex, newEpsilon, numParticles*sizeof(float)));
-		CUDA_SAFE_CALL(cudaBindTexture(0, infoTex, info, numParticles*sizeof(particleinfo)));
-
-		// execute the kernel
-		cuforces::calcTestpointsVelocityDevice<kerneltype><<< numBlocks, numThreads >>>
-			(pos, newVel, newTke, newEpsilon, particleHash, cellStart, neibsList, particleRangeEnd, slength, influenceradius);
-
-		// check if kernel invocation generated an error
-		CUT_CHECK_ERROR("Testpoints kernel execution failed");
-
-		#if (__COMPUTE__ < 20)
-		CUDA_SAFE_CALL(cudaUnbindTexture(posTex));
-		#endif
-		CUDA_SAFE_CALL(cudaUnbindTexture(velTex));
-		if (newTke)
-			CUDA_SAFE_CALL(cudaUnbindTexture(keps_kTex));
-		if (newEpsilon)
-			CUDA_SAFE_CALL(cudaUnbindTexture(keps_eTex));
-		CUDA_SAFE_CALL(cudaUnbindTexture(infoTex));
-	}
-};
-
-template<KernelType kerneltype>
-struct CUDAPostProcessEngineHelper<SURFACE_DETECTION, kerneltype>
-: public CUDAPostProcessEngineHelperDefaults
-{
-	// pass BUFFER_NORMALS option to the SURFACE_DETECTION filter
-	// to save normals too
-	static flag_t get_written_buffers(flag_t options)
-	{ return BUFFER_INFO | (options & BUFFER_NORMALS); }
-
-	static void process(
-				flag_t	options,
-		MultiBufferList::const_iterator bufread,
-		MultiBufferList::iterator bufwrite,
-		const	uint	*cellStart,
-				uint	numParticles,
-				uint	particleRangeEnd,
-				float	slength,
-				float	influenceradius)
-	{
-		// thread per particle
-		uint numThreads = BLOCK_SIZE_CALCTEST;
-		uint numBlocks = div_up(particleRangeEnd, numThreads);
-
-		const float4 *pos = bufread->getData<BUFFER_POS>();
-		const float4 *vel = bufread->getData<BUFFER_VEL>();
-		const particleinfo *info = bufread->getData<BUFFER_INFO>();
-		const hashKey *particleHash = bufread->getData<BUFFER_HASH>();
-		const neibdata *neibsList = bufread->getData<BUFFER_NEIBSLIST>();
-
-		particleinfo *newInfo = bufwrite->getData<BUFFER_INFO>();
-		float4 *normals = bufwrite->getData<BUFFER_NORMALS>();
-
-		#if (__COMPUTE__ < 20)
-		CUDA_SAFE_CALL(cudaBindTexture(0, posTex, pos, numParticles*sizeof(float4)));
-		#endif
-		CUDA_SAFE_CALL(cudaBindTexture(0, velTex, vel, numParticles*sizeof(float4)));
-		CUDA_SAFE_CALL(cudaBindTexture(0, infoTex, info, numParticles*sizeof(particleinfo)));
-
-		// execute the kernel
-		if (options & BUFFER_NORMALS) {
-			cuforces::calcSurfaceparticleDevice<kerneltype, true><<< numBlocks, numThreads >>>
-				(pos, normals, newInfo, particleHash, cellStart, neibsList, particleRangeEnd, slength, influenceradius);
-		} else {
-			cuforces::calcSurfaceparticleDevice<kerneltype, false><<< numBlocks, numThreads >>>
-				(pos, normals, newInfo, particleHash, cellStart, neibsList, particleRangeEnd, slength, influenceradius);
-		}
-
-		// check if kernel invocation generated an error
-		CUT_CHECK_ERROR("surface kernel execution failed");
-
-		#if (__COMPUTE__ < 20)
-		CUDA_SAFE_CALL(cudaUnbindTexture(posTex));
-		#endif
-		CUDA_SAFE_CALL(cudaUnbindTexture(velTex));
-		CUDA_SAFE_CALL(cudaUnbindTexture(infoTex));
-	}
-};
-
-template<KernelType kerneltype>
-struct CUDAPostProcessEngineHelper<CALC_PRIVATE, kerneltype>
-: public CUDAPostProcessEngineHelperDefaults
-{
-	// buffers updated in-place
-	static flag_t get_written_buffers(flag_t)
-	{ return BUFFER_PRIVATE; }
-
-	static void process(
-				flag_t	options,
-		MultiBufferList::const_iterator bufread,
-		MultiBufferList::iterator bufwrite,
-		const	uint	*cellStart,
-				uint	numParticles,
-				uint	particleRangeEnd,
-				float	slength,
-				float	influenceradius)
-	{
-		// thread per particle
-		uint numThreads = BLOCK_SIZE_CALCTEST;
-		uint numBlocks = div_up(particleRangeEnd, numThreads);
-
-		const float4 *pos = bufread->getData<BUFFER_POS>();
-		const float4 *vel = bufread->getData<BUFFER_VEL>();
-		const particleinfo *info = bufread->getData<BUFFER_INFO>();
-		const hashKey *particleHash = bufread->getData<BUFFER_HASH>();
-		const neibdata *neibsList = bufread->getData<BUFFER_NEIBSLIST>();
-
-		float *priv = bufwrite->getData<BUFFER_PRIVATE>();
-
-		#if (__COMPUTE__ < 20)
-		CUDA_SAFE_CALL(cudaBindTexture(0, posTex, pos, numParticles*sizeof(float4)));
-		#endif
-		CUDA_SAFE_CALL(cudaBindTexture(0, infoTex, info, numParticles*sizeof(particleinfo)));
-		CUDA_SAFE_CALL(cudaBindTexture(0, velTex, vel, numParticles*sizeof(float4)));
-
-		//execute kernel
-		cuforces::calcPrivateDevice<<<numBlocks, numThreads>>>
-			(	pos,
-				priv,
-				particleHash,
-				cellStart,
-				neibsList,
-				slength,
-				influenceradius,
-				numParticles);
-
-		#if (__COMPUTE__ < 20)
-		CUDA_SAFE_CALL(cudaUnbindTexture(posTex));
-		#endif
-		CUDA_SAFE_CALL(cudaUnbindTexture(infoTex));
-		CUDA_SAFE_CALL(cudaUnbindTexture(velTex));
-
-		// check if kernel invocation generated an error
-		CUT_CHECK_ERROR("CalcPrivate kernel execution failed");
-	}
-};
-
-/// The actual CUDAPostProcessEngine class delegates to the helpers
-template<PostProcessType pptype, KernelType kerneltype>
-class CUDAPostProcessEngine : public AbstractPostProcessEngine
-{
-	typedef CUDAPostProcessEngineHelper<pptype, kerneltype> Helper;
-
-public:
-	CUDAPostProcessEngine(flag_t options=NO_FLAGS) :
-		AbstractPostProcessEngine(options)
-	{}
-
-	void setconstants() {} // TODO
-	void getconstants() {} // TODO
-
-	flag_t get_written_buffers() const
-	{ return Helper::get_written_buffers(m_options); }
-
-	flag_t get_updated_buffers() const
-	{ return Helper::get_updated_buffers(m_options); }
-
-	void process(
-		MultiBufferList::const_iterator bufread,
-		MultiBufferList::iterator bufwrite,
-		const	uint	*cellStart,
-				uint	numParticles,
-				uint	particleRangeEnd,
-				float	slength,
-				float	influenceradius)
-	{
-		Helper::process(m_options, bufread, bufwrite, cellStart, numParticles,
-			particleRangeEnd, slength, influenceradius);
-	}
-};
-
-
-#if 0
-/// TODO FIXME make this into a proper post-processing filter
-
-/* Reductions */
-void set_reduction_params(void* buffer, size_t blocks,
-		size_t blocksize_max, size_t shmem_max)
-{
-	reduce_blocks = blocks;
-	// in the second step of a reduction, a single block is launched, whose size
-	// should be the smallest power of two that covers the number of blocks used
-	// in the previous reduction run
-	reduce_bs2 = 32;
-	while (reduce_bs2 < blocks)
-		reduce_bs2<<=1;
-
-	reduce_blocksize_max = blocksize_max;
-	reduce_shmem_max = shmem_max;
-	reduce_buffer = buffer;
-}
-
-void unset_reduction_params()
-{
-	CUDA_SAFE_CALL(cudaFree(reduce_buffer));
-	reduce_buffer = NULL;
-}
-
-// Compute system energy
-void calc_energy(
-		float4			*output,
-	const	float4		*pos,
-	const	float4		*vel,
-	const	particleinfo	*pinfo,
-	const	hashKey		*particleHash,
-		uint			numParticles,
-		uint			numFluids)
-{
-	// shmem needed by a single thread
-	size_t shmem_thread = numFluids*sizeof(float4)*2;
-	size_t blocksize_max = reduce_shmem_max/shmem_thread;
-	if (blocksize_max > reduce_blocksize_max)
-		blocksize_max = reduce_blocksize_max;
-
-	size_t blocksize = 32;
-	while (blocksize*2 < blocksize_max)
-		blocksize<<=1;
-
-	cuforces::calcEnergiesDevice<<<reduce_blocks, blocksize, blocksize*shmem_thread>>>(
-			pos, vel, pinfo, particleHash, numParticles, numFluids, (float4*)reduce_buffer);
-	CUT_CHECK_ERROR("System energy stage 1 failed");
-
-	cuforces::calcEnergies2Device<<<1, reduce_bs2, reduce_bs2*shmem_thread>>>(
-			(float4*)reduce_buffer, reduce_blocks, numFluids);
-	CUT_CHECK_ERROR("System energy stage 2 failed");
-	CUDA_SAFE_CALL(cudaMemcpy(output, reduce_buffer, numFluids*sizeof(float4), cudaMemcpyDeviceToHost));
-}
-#endif
-
 /// Boundary conditions engines
 
 // TODO FIXME at this time this is just a horrible hack to group the boundary-conditions
@@ -1386,6 +1046,11 @@ class CUDABoundaryConditionsEngine : public AbstractBoundaryConditionsEngine
 {
 public:
 
+void
+updateNewIDsOffset(const uint &newIDsOffset)
+{
+	CUDA_SAFE_CALL(cudaMemcpyToSymbol(cubounds::d_newIDsOffset, &newIDsOffset, sizeof(uint)));
+}
 
 /// Disables particles that went through boundaries when open boundaries are used
 void
@@ -1409,7 +1074,7 @@ disableOutgoingParts(		float4*			pos,
 	CUDA_SAFE_CALL(cudaUnbindTexture(infoTex));
 
 	// check if kernel invocation generated an error
-	CUT_CHECK_ERROR("UpdatePositions kernel execution failed");
+	KERNEL_CHECK_ERROR;
 }
 
 /// Computes the boundary conditions on segments using the information from the fluid (on solid walls used for Neumann boundary conditions).
@@ -1457,7 +1122,7 @@ saSegmentBoundaryConditions(
 	CUDA_SAFE_CALL(cudaUnbindTexture(infoTex));
 
 	// check if kernel invocation generated an error
-	CUT_CHECK_ERROR("saSegmentBoundaryConditions kernel execution failed");
+	KERNEL_CHECK_ERROR;
 }
 
 /// Apply boundary conditions to vertex particles.
@@ -1476,6 +1141,7 @@ saVertexBoundaryConditions(
 			float2*			contupd,
 	const	float4*			boundelement,
 			vertexinfo*		vertices,
+	const	float2			* const vertPos[],
 	const	uint*			vertIDToIndex,
 			particleinfo*	info,
 			hashKey*		particleHash,
@@ -1489,8 +1155,8 @@ saVertexBoundaryConditions(
 	const	float			deltap,
 	const	float			slength,
 	const	float			influenceradius,
-	const	uint&			newIDsOffset,
 	const	bool			initStep,
+	const	bool			resume,
 	const	uint			deviceId,
 	const	uint			numDevices)
 {
@@ -1498,8 +1164,6 @@ saVertexBoundaryConditions(
 
 	uint numThreads = BLOCK_SIZE_SHEPARD;
 	uint numBlocks = div_up(particleRangeEnd, numThreads);
-
-	CUDA_SAFE_CALL(cudaMemcpyToSymbol(cuforces::d_newIDsOffset, &newIDsOffset, sizeof(uint)));
 
 	CUDA_SAFE_CALL(cudaBindTexture(0, boundTex, boundelement, numParticles*sizeof(float4)));
 
@@ -1510,14 +1174,55 @@ saVertexBoundaryConditions(
 
 	// execute the kernel
 	cuforces::saVertexBoundaryConditions<kerneltype><<< numBlocks, numThreads, dummy_shared >>>
-		(oldPos, oldVel, oldTKE, oldEps, oldGGam, oldEulerVel, forces, contupd, vertices, vertIDToIndex, info, particleHash, cellStart, neibsList,
-		 particleRangeEnd, newNumParticles, dt, step, deltap, slength, influenceradius, initStep, deviceId, numDevices);
+		(oldPos, oldVel, oldTKE, oldEps, oldGGam, oldEulerVel, forces, contupd, vertices, vertPos[0], vertPos[1], vertPos[2], vertIDToIndex, info, particleHash, cellStart, neibsList,
+		 particleRangeEnd, newNumParticles, dt, step, deltap, slength, influenceradius, initStep, resume, deviceId, numDevices);
 
 	// check if kernel invocation generated an error
-	CUT_CHECK_ERROR("saVertexBoundaryConditions kernel execution failed");
+	KERNEL_CHECK_ERROR;
 
 	CUDA_SAFE_CALL(cudaUnbindTexture(boundTex));
 
+}
+
+/// Computes the initial value of gamma using a Gauss quadrature formula
+void
+initGamma(
+	MultiBufferList::iterator bufwrite,
+	MultiBufferList::const_iterator bufread,
+	const	uint			numParticles,
+	const	float			slength,
+	const	float			deltap,
+	const	float			influenceradius,
+	const	float			epsilon,
+	const	uint*			cellStart,
+	const	uint			particleRangeEnd)
+{
+	uint numThreads = BLOCK_SIZE_FORCES;
+	uint numBlocks = div_up(particleRangeEnd, numThreads);
+
+	int dummy_shared = 0;
+	// TODO: Probably this optimization doesn't work with this function. Need to be tested.
+	#if (__COMPUTE__ == 20)
+	dummy_shared = 2560;
+	#endif
+
+	const float4 *pos = bufread->getData<BUFFER_POS>();
+	const particleinfo *info = bufread->getData<BUFFER_INFO>();
+	const hashKey *pHash = bufread->getData<BUFFER_HASH>();
+	const neibdata *neibsList = bufread->getData<BUFFER_NEIBSLIST>();
+	const float2 * const *vertPos = bufread->getRawPtr<BUFFER_VERTPOS>();
+	const float4 *oldGGam = bufread->getData<BUFFER_GRADGAMMA>();
+	const vertexinfo *vertices = bufread->getData<BUFFER_VERTICES>();
+	const uint *vertIDToIndex = bufread->getData<BUFFER_VERTIDINDEX>();
+	float4 *newGGam = bufwrite->getData<BUFFER_GRADGAMMA>();
+	float4 *boundelement = bufwrite->getData<BUFFER_BOUNDELEMENTS>();
+
+	// execute the kernel
+	cuforces::initGamma<kerneltype><<< numBlocks, numThreads, dummy_shared >>>
+		(newGGam, boundelement, pos, oldGGam, vertices, vertIDToIndex, vertPos[0], vertPos[1], vertPos[2], pHash, info, cellStart, neibsList, particleRangeEnd, slength, deltap, influenceradius, epsilon);
+
+	// check if kernel invocation generated an error
+	KERNEL_CHECK_ERROR;
 }
 
 // Downloads the per device waterdepth from the GPU
@@ -1579,47 +1284,10 @@ saIdentifyCornerVertices(
 		eps);
 
 	// check if kernel invocation generated an error
-	CUT_CHECK_ERROR("saIdentifyCornerVertices kernel execution failed");
+	KERNEL_CHECK_ERROR;
 
 	CUDA_SAFE_CALL(cudaUnbindTexture(boundTex));
 
-}
-
-/// Finds the closest vertex particles for segments which have no vertices themselves that are of
-/// the same object type and are no corner particles
-void
-saFindClosestVertex(
-	const	float4*			oldPos,
-			particleinfo*	info,
-			vertexinfo*		vertices,
-	const	uint*			vertIDToIndex,
-	const	hashKey*		particleHash,
-	const	uint*			cellStart,
-	const	neibdata*		neibsList,
-	const	uint			numParticles,
-	const	uint			particleRangeEnd)
-{
-	int dummy_shared = 0;
-
-	uint numThreads = BLOCK_SIZE_SHEPARD;
-	uint numBlocks = div_up(particleRangeEnd, numThreads);
-
-	CUDA_SAFE_CALL(cudaBindTexture(0, infoTex, info, numParticles*sizeof(particleinfo)));
-
-	cuforces::saFindClosestVertex<<< numBlocks, numThreads, dummy_shared >>>(
-				oldPos,
-				info,
-				vertices,
-				vertIDToIndex,
-				particleHash,
-				cellStart,
-				neibsList,
-				numParticles);
-
-	// check if kernel invocation generated an error
-	CUT_CHECK_ERROR("saFindClosestVertex kernel execution failed");
-
-	CUDA_SAFE_CALL(cudaUnbindTexture(infoTex));
 }
 };
 

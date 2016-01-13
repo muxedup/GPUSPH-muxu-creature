@@ -7,7 +7,7 @@
 
     Johns Hopkins University, Baltimore, MD
 
-    This file is part of GPUSPH.
+    This file is part of GPUSPH.
 
     GPUSPH is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -54,7 +54,7 @@ SET_BUFFER_TRAITS(BUFFER_HASH, hashKey, 1, "Hash");
 #define BUFFER_PARTINDEX	(BUFFER_HASH << 1)
 SET_BUFFER_TRAITS(BUFFER_PARTINDEX, uint, 1, "Particle Index");
 #define BUFFER_VERTIDINDEX		(BUFFER_PARTINDEX << 1)
-SET_BUFFER_TRAITS(BUFFER_VERTIDINDEX, uint, 1, "Vertice ID to Particle Index");
+SET_BUFFER_TRAITS(BUFFER_VERTIDINDEX, uint, 1, "Vertex ID to Particle Index");
 
 // not used for the time being. evaluate if they should be migrated to the buffer mechanism
 // too or not
@@ -121,7 +121,7 @@ SET_BUFFER_TRAITS(BUFFER_SPS_TURBVISC, float, 1, "SPS Turbulent viscosity");
 SET_BUFFER_TRAITS(BUFFER_VOLUME, float4, 1, "Volume");
 
 #define BUFFER_SIGMA		(BUFFER_VOLUME << 1)
-SET_BUFFER_TRAITS(BUFFER_SIGMA, float, 1, "Sigma (inverse discrete volume)");
+SET_BUFFER_TRAITS(BUFFER_SIGMA, float, 1, "Sigma (discrete specific volume)");
 
 #define BUFFER_PRIVATE		(BUFFER_SIGMA << 1)
 SET_BUFFER_TRAITS(BUFFER_PRIVATE, float, 1, "Private scalar");

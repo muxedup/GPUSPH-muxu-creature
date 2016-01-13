@@ -7,7 +7,7 @@
 
     Johns Hopkins University, Baltimore, MD
 
-    This file is part of GPUSPH.
+    This file is part of GPUSPH.
 
     GPUSPH is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -42,7 +42,6 @@
 #include "fastmath_select.opt"
 #include "dbg_select.opt"
 #include "compute_select.opt"
-#include "hash_key_size_select.opt"
 
 using std::cout;
 using std::endl;
@@ -64,7 +63,6 @@ void show_version()
 		FASTMATH ? "with" : "without",
 		COMPUTE/10, COMPUTE%10);
 	printf("Compiled for problem \"%s\"\n", QUOTED_PROBLEM);
-	printf("Hashkey is %ubits long\n", HASH_KEY_SIZE);
 }
 
 
@@ -84,7 +82,8 @@ void print_usage() {
 	cout << " --device n[,n...] : Use device number n; runs multi-gpu if multiple n are given\n";
 	cout << " --dem : Use given DEM (if problem supports it)\n";
 	cout << " --deltap : Use given deltap (VAL is cast to float)\n";
-	cout << " --tend: Break at given time (VAL is cast to float)\n";
+	cout << " --tend : Break at given time (VAL is cast to float)\n";
+	cout << " --maxiter : Break after this many iterations (integer VAL)\n";
 	cout << " --dir : Use given directory for dumps instead of date-based one\n";
 	cout << " --nosave : Disable all file dumps but the last\n";
 	cout << " --gpudirect: Enable GPUDirect for RDMA (requires a CUDA-aware MPI library)\n";
@@ -160,6 +159,11 @@ int parse_options(int argc, char **argv, GlobalData *gdata)
 		} else if (!strcmp(arg, "--tend")) {
 			/* read the next arg as a float */
 			sscanf(*argv, "%f", &(_clOptions->tend));
+			argv++;
+			argc--;
+		} else if (!strcmp(arg, "--maxiter")) {
+			/* read the next arg as a int */
+			sscanf(*argv, "%d", &(_clOptions->maxiter));
 			argv++;
 			argc--;
 		} else if (!strcmp(arg, "--dem")) {
@@ -333,15 +337,6 @@ int main(int argc, char** argv) {
 	printf(" tot devs = %u (%u * %u)\n",gdata.totDevices, gdata.mpi_nodes, gdata.devices );
 	if (gdata.clOptions->num_hosts > 0)
 		printf(" num-hosts was specified: %u; shifting device numbers with offset %u\n", gdata.clOptions->num_hosts, devIndexOffset);
-
-#if HASH_KEY_SIZE < 64
-	// only single-node single-GPU possible with 32 bits keys
-	if (gdata.totDevices > 1) {
-		fprintf(stderr, "FATAL: multi-device simulations require the hashKey to be at least 64 bits long\n");
-		gdata.networkManager->finalizeNetwork();
-		return 1;
-	}
-#endif
 
 	if (gdata.clOptions->asyncNetworkTransfers) {
 

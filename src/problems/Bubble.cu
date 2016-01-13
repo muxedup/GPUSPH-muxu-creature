@@ -7,7 +7,7 @@
 
     Johns Hopkins University, Baltimore, MD
 
-    This file is part of GPUSPH.
+    This file is part of GPUSPH.
 
     GPUSPH is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -54,7 +54,8 @@ Bubble::Bubble(GlobalData *_gdata) : Problem(_gdata),
 	SETUP_FRAMEWORK(
 		formulation<SPH_GRENIER>,
 		viscosity<DYNAMICVISC>,
-		boundary<DYN_BOUNDARY>
+		boundary<DYN_BOUNDARY>,
+		flags<ENABLE_DTADAPT | (USE_PLANES ? ENABLE_PLANES : ENABLE_NONE)>
 	);
 
 	// SPH parameters
@@ -62,29 +63,30 @@ Bubble::Bubble(GlobalData *_gdata) : Problem(_gdata),
 	//set_deltap(6.72e-4/1.3);
 	set_deltap(0.128*R/1.3);
 
-	if (m_simparams->boundarytype == DYN_BOUNDARY) {
-		dyn_layers = ceil(m_simparams->kerneltype*m_simparams->sfactor);
+	if (simparams()->boundarytype == DYN_BOUNDARY) {
+		dyn_layers = simparams()->get_influence_layers() + 1;
 		extra_offset = make_double3(dyn_layers*m_deltap);
 	} else {
+		dyn_layers = 0;
 		extra_offset = make_double3(0.0);
 	}
 	m_size = make_double3(lx, ly, lz) + 2*extra_offset;
 	m_origin = -m_size/2;
 
-	m_simparams->buildneibsfreq = 10;
+	simparams()->buildneibsfreq = 10;
 
-	m_simparams->tend = 1.0;
+	simparams()->tend = 1.0;
 
-	m_physparams->epsinterface = 0.08;
+	physparams()->epsinterface = 0.08;
 
 	// Physical parameters
-	m_physparams->gravity = make_float3(0.0, 0.0, -9.81f);
-	float g = length(m_physparams->gravity);
+	physparams()->gravity = make_float3(0.0, 0.0, -9.81f);
+	float g = length(physparams()->gravity);
 
 	//set p1coeff,p2coeff, epsxsph here if different from 12.,6., 0.5
-	m_physparams->dcoeff = 5.0f*g*H;
+	physparams()->dcoeff = 5.0f*g*H;
 
-	m_physparams->r0 = m_deltap;
+	physparams()->r0 = m_deltap;
 
 	float maxvel = sqrt(g*H);
 	float rho0 = 1;
@@ -99,8 +101,8 @@ Bubble::Bubble(GlobalData *_gdata) : Problem(_gdata),
 	set_kinematic_visc(air, 4.5e-3f);
 	set_kinematic_visc(water, 3.5e-5f);
 
-	m_physparams->artvisccoeff = 0.3f;
-	m_physparams->epsartvisc = 0.01*m_simparams->slength*m_simparams->slength;
+	physparams()->artvisccoeff = 0.3f;
+	physparams()->epsartvisc = 0.01*simparams()->slength*simparams()->slength;
 
 	// Drawing and saving times
 	add_writer(VTKWRITER, 0.01);
@@ -125,7 +127,7 @@ void Bubble::release_memory(void)
 
 int Bubble::fill_parts()
 {
-	float r0 = m_physparams->r0;
+	float r0 = physparams()->r0;
 
 	experiment_box = Cube(Point(m_origin), m_size.x,
 		m_size.y, m_size.z);
@@ -133,10 +135,10 @@ int Bubble::fill_parts()
 	fluid = Cube(Point(m_origin + extra_offset),
 		lx, ly, H);
 
-	experiment_box.SetPartMass(r0, m_physparams->rho0[1]);
+	experiment_box.SetPartMass(r0, physparams()->rho0[1]);
 
 #if !USE_PLANES
-	switch (m_simparams->boundarytype) {
+	switch (simparams()->boundarytype) {
 	case LJ_BOUNDARY:
 	case MK_BOUNDARY:
 		experiment_box.FillBorder(boundary_parts, r0, false);
@@ -157,36 +159,22 @@ int Bubble::fill_parts()
 	return fluid_parts.size() + boundary_parts.size();
 }
 
-uint Bubble::fill_planes()
+void Bubble::copy_planes(PlaneList &planes)
 {
 #if USE_PLANES
-	return 6;
-#else
-	return 0;
-#endif
-}
-
-void Bubble::copy_planes(double4 *planes)
-{
-	uint pnum = 0;
 	// z = m_origin.z
-	planes[pnum] = make_double4(0, 0, 1.0, -m_origin.z);
-	++pnum;
+	planes.push_back( implicit_plane(0, 0, 1.0, -m_origin.z) );
 	// z = m_origin.z+lz
-	planes[pnum] = make_double4(0, 0, -1.0, m_origin.z+lz);
-	++pnum;
+	planes.push_back( implicit_plane(0, 0, -1.0, m_origin.z+lz) );
 	// y = m_origin.y
-	planes[pnum] = make_double4(0, 1.0, 0, -m_origin.y);
-	++pnum;
+	planes.push_back( implicit_plane(0, 1.0, 0, -m_origin.y) );
 	// y = m_origin.y+ly
-	planes[pnum] = make_double4(0, -1.0, 0, m_origin.y+ly);
-	++pnum;
+	planes.push_back( implicit_plane(0, -1.0, 0, m_origin.y+ly) );
 	// x = m_origin.x
-	planes[pnum] = make_double4(1.0, 0, 0, -m_origin.x);
-	++pnum;
+	planes.push_back( implicit_plane(1.0, 0, 0, -m_origin.x) );
 	// x = m_origin.x+lx
-	planes[pnum] = make_double4(-1.0, 0, 0, m_origin.x+lx);
-	++pnum;
+	planes.push_back( implicit_plane(-1.0, 0, 0, m_origin.x+lx) );
+#endif
 }
 
 
@@ -240,10 +228,10 @@ void Bubble::copy_to_array(BufferList &buffers)
 					- (pt(1))*(pt(1))
 					);
 			// pressure at interface, from heavy fluid
-			float g = length(m_physparams->gravity);
-			float P = m_physparams->rho0[1]*(H - z_intf)*g;
+			float g = length(physparams()->gravity);
+			float P = physparams()->rho0[1]*(H - z_intf)*g;
 			// plus hydrostatic pressure from _our_ fluid
-			P += m_physparams->rho0[0]*(z_intf - pt(2) + m_origin.z)*g;
+			P += physparams()->rho0[0]*(z_intf - pt(2) + m_origin.z)*g;
 			rho = density_for_pressure(P, 0);
 		}
 		info[i]= make_particleinfo(PT_FLUID, fluid_idx, i);

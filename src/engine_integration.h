@@ -7,7 +7,7 @@
 
     Johns Hopkins University, Baltimore, MD
 
-    This file is part of GPUSPH.
+    This file is part of GPUSPH.
 
     GPUSPH is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -40,6 +40,8 @@
 class AbstractIntegrationEngine
 {
 public:
+	virtual ~AbstractIntegrationEngine() {}
+
 	virtual void
 	setconstants(const PhysParams *physparams, float3 const& worldOrigin,
 		uint3 const& gridSize, float3 const& cellSize, idx_t const& allocatedParticles,

@@ -7,7 +7,7 @@
 
     Johns Hopkins University, Baltimore, MD
 
-    This file is part of GPUSPH.
+    This file is part of GPUSPH.
 
     GPUSPH is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -43,16 +43,7 @@
    C++ revisions too.
 */
 
-#if __cplusplus <= 199711L
-template<bool B, typename T, typename F>
-struct conditional { typedef T type; };
-
-template<typename T, typename F>
-struct conditional<false, T, F> { typedef F type; };
-#else
-#include <type_traits>
-using std::conditional;
-#endif
+#include "cpp11_missing.h" // conditional<>
 
 /* The general idea is that each group of members of the structure is defined as
    a specific (non-template, usually) structure, and then the actual template
@@ -93,6 +84,11 @@ struct empty
 	template<typename T1, typename T2, typename T3, typename T4, typename T5, typename T6>
 	__host__ __device__ __forceinline__
 	empty(T1, T2, T3, T4, T5, T6) {}
+
+	template<typename T1, typename T2, typename T3, typename T4, typename T5, typename T6,
+		typename T7, typename T8, typename T9, typename T10, typename T11, typename T12>
+	__host__ __device__ __forceinline__
+	empty(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12) {}
 };
 
 
@@ -105,8 +101,8 @@ struct empty
    struct_to_include) to do the job for us
 */
 
-#define COND_STRUCT(some_cond, some_struct) \
-	conditional<some_cond, some_struct, empty<some_struct> >::type
+#define COND_STRUCT(some_cond, ...) \
+	conditional<some_cond, __VA_ARGS__, empty< __VA_ARGS__ > >::type
 
 #endif // _COND_PARAMS_H
 

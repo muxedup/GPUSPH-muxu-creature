@@ -7,7 +7,7 @@
 
     Johns Hopkins University, Baltimore, MD
 
-    This file is part of GPUSPH.
+    This file is part of GPUSPH.
 
     GPUSPH is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -115,33 +115,42 @@ public:
 	static ConstWriterMap
 	NeedWrite(double t);
 
-	// mark writers as done if they needed to save
-	// at the given time (optionally force)
+	static const char* Name(WriterType key);
+
+	// tell writers that we're starting to send write requests
+	// returns the list of writers that will be involved
+	static WriterMap
+	StartWriting(double t, bool force=false);
+
+	// mark writers as done if they needed to save at the given time
 	static void
-	MarkWritten(double t, bool force=false);
+	MarkWritten(WriterMap writers, double t);
+
+	// mark writers as written even though they didn't actually save
+	static void
+	FakeMarkWritten(ConstWriterMap writers, double t);
 
 	// write points
 	static void
-	Write(uint numParts, BufferList const& buffers, uint node_offset, double t, const bool testpoints);
+	Write(WriterMap writers, uint numParts, BufferList const& buffers, uint node_offset, double t, const bool testpoints);
 
 	// write wave gages
 	static void
-	WriteWaveGage(double t, GageList const& gage);
+	WriteWaveGage(WriterMap writers, double t, GageList const& gage);
 
 	// write object data
 	static void
-	WriteObjects(double t);
+	WriteObjects(WriterMap writers, double t);
 
 	// write object forces
 	static void
-	WriteObjectForces(double t, uint numobjects,
+	WriteObjectForces(WriterMap writers, double t, uint numobjects,
 		const float3* computedforces, const float3* computedtorques,
 		const float3* appliedforces, const float3* appliedtorques);
 
-	// record that the upcoming write requests should be forced (regardless of write frequency)
-	static inline void
-	SetForced(bool force)
-	{ m_forced = force; }
+	// write fluxes of open boundaries
+	static void
+	WriteFlux(WriterMap writers, double t, float* fluxes);
 
 	// delete writers and clear the list
 	static void
@@ -165,9 +174,20 @@ protected:
 	bool is_special() const
 	{ return isnan(m_writefreq); }
 
-	inline void
+	// Writers that need to do special things before starting to write
+	// should override this
+	virtual void
+	start_writing(double t) {}
+
+	// finish writing. Writers that need to do special things when done
+	// can override this problem, but they should call Writer::mark_written
+	// inside
+	virtual void
 	mark_written(double t)
-	{ m_last_write_time = t; }
+	{
+		m_last_write_time = t;
+		++m_FileCounter;
+	}
 
 	virtual bool
 	need_write(double t) const;
@@ -189,7 +209,10 @@ protected:
 		const float3* computedforces, const float3* computedtorques,
 		const float3* appliedforces, const float3* appliedtorques) {}
 
-	uint getLastFilenum() const;
+	virtual void
+	write_flux(double t, float *fluxes) {}
+
+	uint getFilenum() const;
 
 	// default suffix (extension) for data files)
 	string			m_fname_sfx;
@@ -224,7 +247,6 @@ protected:
 	ofstream		m_timefile;
 
 	const Problem	*m_problem;
-	string			next_filenum();
 	string			current_filenum() const;
 	const GlobalData*		gdata;
 };

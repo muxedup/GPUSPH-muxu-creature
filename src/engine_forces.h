@@ -7,7 +7,7 @@
 
     Johns Hopkins University, Baltimore, MD
 
-    This file is part of GPUSPH.
+    This file is part of GPUSPH.
 
     GPUSPH is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -33,6 +33,7 @@
  * signatures, but the design probably needs to be improved. */
 
 #include "particledefine.h"
+#include "planes.h"
 #include "physparams.h"
 #include "simparams.h"
 #include "buffer.h"
@@ -40,6 +41,8 @@
 class AbstractForcesEngine
 {
 public:
+	virtual ~AbstractForcesEngine() {};
+
 	virtual void
 	setconstants(const SimParams *simparams, const PhysParams *physparams,
 		float3 const& worldOrigin, uint3 const& gridSize, float3 const& cellSize,
@@ -49,8 +52,7 @@ public:
 	getconstants(PhysParams *physparams) = 0;
 
 	virtual void
-	setplanes(int numPlanes, const float3 *planeNormal,
-		const int3 *gridPos, const float3 *localPos) = 0;
+	setplanes(PlaneList const& planes) = 0;
 
 	virtual void
 	setgravity(float3 const& gravity) = 0;
@@ -85,6 +87,8 @@ public:
 	virtual void
 	unbind_textures() = 0;
 
+	// TODO set/unsetDEM should be moved to the BC engine,
+	// and the latter should be called by the destructor
 	virtual void
 	setDEM(const float *hDem, int width, int height) = 0;
 
@@ -151,6 +155,11 @@ public:
 class AbstractBoundaryConditionsEngine
 {
 public:
+	virtual ~AbstractBoundaryConditionsEngine() {}
+
+/// Update the ID offset for new particle generation
+virtual void
+updateNewIDsOffset(const uint &newIDsOffset) = 0;
 
 // Computes the boundary conditions on segments using the information from the fluid (on solid walls used for Neumann boundary conditions).
 virtual void
@@ -192,6 +201,7 @@ saVertexBoundaryConditions(
 			float2*			contupd,
 	const	float4*			boundelement,
 			vertexinfo*		vertices,
+	const	float2			* const vertPos[],
 	const	uint*			vertIDToIndex,
 			particleinfo*	info,
 			hashKey*		particleHash,
@@ -205,10 +215,24 @@ saVertexBoundaryConditions(
 	const	float			deltap,
 	const	float			slength,
 	const	float			influenceradius,
-	const	uint&			newIDsOffset,
 	const	bool			initStep,
+	const	bool			resume,
 	const	uint			deviceId,
 	const	uint			numDevices) = 0;
+
+// initialisation of gamma
+virtual
+void
+initGamma(
+	MultiBufferList::iterator bufwrite,
+	MultiBufferList::const_iterator bufread,
+	const	uint			numParticles,
+	const	float			slength,
+	const	float			deltap,
+	const	float			influenceradius,
+	const	float			epsilon,
+	const	uint*			cellStart,
+	const	uint			particleRangeEnd) = 0;
 
 // disables particles that went through boundaries when open boundaries are used
 virtual void
@@ -246,20 +270,6 @@ saIdentifyCornerVertices(
 	const	uint			particleRangeEnd,
 	const	float			deltap,
 	const	float			eps) = 0;
-
-// finds the closest vertex particles for segments which have no vertices themselves that are of
-// the same object type and are no corner particles
-virtual void
-saFindClosestVertex(
-	const	float4*			oldPos,
-			particleinfo*	info,
-			vertexinfo*		vertices,
-	const	uint*			vertIDToIndex,
-	const	hashKey*		particleHash,
-	const	uint*			cellStart,
-	const	neibdata*		neibsList,
-	const	uint			numParticles,
-	const	uint			particleRangeEnd) = 0;
 
 };
 #endif

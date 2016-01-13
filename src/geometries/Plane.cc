@@ -7,7 +7,7 @@
 
     Johns Hopkins University, Baltimore, MD
 
-    This file is part of GPUSPH.
+    This file is part of GPUSPH.
 
     GPUSPH is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -89,7 +89,7 @@ void Plane::getBoundingBox(Point &output_min, Point &output_max)
 void Plane::shift(const double3 &offset)
 {
 	const Point poff = Point(offset);
-	// also update center altough it has little meaning for a plane
+	// also update center although it has little meaning for a plane
 	m_center += poff;
 	printf("m_d was %g, off %g %g %g\n", m_d, offset.x, offset.y, offset.z);
 	m_d += m_a * offset.x + m_b * offset.y + m_c * offset.z;

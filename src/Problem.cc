@@ -48,25 +48,43 @@
 using namespace std;
 
 Problem::Problem(GlobalData *_gdata) :
-	gdata(_gdata),
-	m_options(_gdata->clOptions),
-	m_simparams(NULL),
-	m_physparams(NULL),
-	m_simframework(NULL),
 	m_problem_dir(_gdata->clOptions->dir),
-	m_bodies_storage(NULL),
+	m_dem(NULL),
 	m_size(make_double3(NAN, NAN, NAN)),
 	m_origin(make_double3(NAN, NAN, NAN)),
-	m_deltap(NAN)
+	m_deltap(NAN),
+	gdata(_gdata),
+	m_options(_gdata->clOptions),
+	m_physparams(new PhysParams()),
+	m_simframework(NULL),
+	m_bodies_storage(NULL)
 {
 }
 
+bool
+Problem::initialize()
+{
+	if (simparams()->gage.size() > 0 && !m_simframework->hasPostProcessEngine(SURFACE_DETECTION)) {
+		printf("Wave gages present: force-enabling surface detection\n");
+		m_simframework->addPostProcessEngine(SURFACE_DETECTION);
+	}
+	// run post-construction functions
+	check_dt();
+	check_maxneibsnum();
+	calculateFerrariCoefficient();
+	create_problem_dir();
+
+	printf("Problem calling set grid params\n");
+	set_grid_params();
+
+	return true;
+}
 
 Problem::~Problem(void)
 {
-	if (m_simparams->numbodies) {
-		delete [] m_bodies_storage;
-	}
+	delete [] m_bodies_storage;
+	delete m_simframework;
+	delete m_physparams;
 
 }
 
@@ -76,7 +94,7 @@ Problem::~Problem(void)
 void
 Problem::allocate_bodies_storage()
 {
-	const uint nbodies = m_simparams->numbodies;
+	const uint nbodies = simparams()->numbodies;
 
 	if (nbodies) {
 		// TODO: this should depend on the integration scheme
@@ -110,15 +128,15 @@ Problem::add_moving_body(Object* object, const MovingBodyType mbtype)
 			mbdata->kdata.crot = make_double3(dBodyGetPosition(bodyid));
 			mbdata->kdata.lvel = make_double3(dBodyGetLinearVel(bodyid));
 			mbdata->kdata.avel = make_double3(dBodyGetAngularVel(bodyid));
-			m_bodies.insert(m_bodies.begin() + m_simparams->numODEbodies, mbdata);
-			m_simparams->numODEbodies++;
-			m_simparams->numforcesbodies++;
+			m_bodies.insert(m_bodies.begin() + simparams()->numODEbodies, mbdata);
+			simparams()->numODEbodies++;
+			simparams()->numforcesbodies++;
 			break;
 		}
 
 		case MB_FORCES_MOVING:
-			m_bodies.insert(m_bodies.begin() + m_simparams->numforcesbodies, mbdata);
-			m_simparams->numforcesbodies++;
+			m_bodies.insert(m_bodies.begin() + simparams()->numforcesbodies, mbdata);
+			simparams()->numforcesbodies++;
 			break;
 
 		case MB_MOVING:
@@ -128,7 +146,7 @@ Problem::add_moving_body(Object* object, const MovingBodyType mbtype)
 
 	mbdata->initial_kdata = mbdata->kdata;
 
-	m_simparams->numbodies = m_bodies.size();
+	simparams()->numbodies = m_bodies.size();
 }
 
 
@@ -237,7 +255,7 @@ Problem::restore_ODE_body(const uint i, const float *gravity_center, const float
 
 
 void
-Problem::calc_grid_and_local_pos(double3 const& globalPos, int3 *gridPos, float3 *localPos)
+Problem::calc_grid_and_local_pos(double3 const& globalPos, int3 *gridPos, float3 *localPos) const
 {
 	int3 _gridPos = calc_grid_pos(globalPos);
 	*gridPos = _gridPos;
@@ -248,7 +266,7 @@ Problem::calc_grid_and_local_pos(double3 const& globalPos, int3 *gridPos, float3
 void
 Problem::get_bodies_cg(void)
 {
-	for (uint i = 0; i < m_simparams->numbodies; i++) {
+	for (uint i = 0; i < simparams()->numbodies; i++) {
 		calc_grid_and_local_pos(m_bodies[i]->kdata.crot,
 			gdata->s_hRbCgGridPos + i,
 			gdata->s_hRbCgPos + i);
@@ -463,18 +481,9 @@ Problem::bodies_timestep(const float3 *forces, const float3 *torques, const int 
 	}
 }
 
-
-// Number of planes
-uint
-Problem::fill_planes(void)
-{
-	return 0;
-}
-
-
 // Copy planes for upload
 void
-Problem::copy_planes(double4* planes)
+Problem::copy_planes(PlaneList& planes)
 {
 	return;
 }
@@ -483,36 +492,36 @@ void
 Problem::check_dt(void)
 {
 	float dt_from_sspeed = INFINITY;
-	for (uint f = 0 ; f < m_physparams->numFluids(); ++f) {
-		float sspeed = m_physparams->sscoeff[f];
-		dt_from_sspeed = fmin(dt_from_sspeed, m_simparams->slength/sspeed);
+	for (uint f = 0 ; f < physparams()->numFluids(); ++f) {
+		float sspeed = physparams()->sscoeff[f];
+		dt_from_sspeed = fmin(dt_from_sspeed, simparams()->slength/sspeed);
 	}
-	dt_from_sspeed *= m_simparams->dtadaptfactor;
+	dt_from_sspeed *= simparams()->dtadaptfactor;
 
-	float dt_from_gravity = sqrt(m_simparams->slength/length(m_physparams->gravity));
-	dt_from_gravity *= m_simparams->dtadaptfactor;
+	float dt_from_gravity = sqrt(simparams()->slength/length(physparams()->gravity));
+	dt_from_gravity *= simparams()->dtadaptfactor;
 
 	float dt_from_visc = NAN;
-	if (m_simparams->visctype != ARTVISC) {
-		for (uint f = 0; f < m_physparams->numFluids(); ++f)
-			dt_from_visc = fminf(dt_from_visc, m_simparams->slength*m_simparams->slength/m_physparams->kinematicvisc[f]);
+	if (simparams()->visctype != ARTVISC) {
+		for (uint f = 0; f < physparams()->numFluids(); ++f)
+			dt_from_visc = fminf(dt_from_visc, simparams()->slength*simparams()->slength/physparams()->kinematicvisc[f]);
 		dt_from_visc *= 0.125f; // TODO this should be configurable
 	}
 
 	float cfl_dt = fminf(dt_from_sspeed, fminf(dt_from_gravity, dt_from_visc));
 
-	if (m_simparams->dt > cfl_dt) {
+	if (simparams()->dt > cfl_dt) {
 		fprintf(stderr, "WARNING: dt %g bigger than %g imposed by CFL conditions (sspeed: %g, gravity: %g, viscosity: %g)\n",
-			m_simparams->dt, cfl_dt,
+			simparams()->dt, cfl_dt,
 			dt_from_sspeed, dt_from_gravity, dt_from_visc);
-	} else if (!m_simparams->dt) { // dt wasn't set
-			m_simparams->dt = cfl_dt;
+	} else if (!simparams()->dt) { // dt wasn't set
+			simparams()->dt = cfl_dt;
 			printf("setting dt = %g from CFL conditions (soundspeed: %g, gravity: %g, viscosity: %g)\n",
-				m_simparams->dt,
+				simparams()->dt,
 				dt_from_sspeed, dt_from_gravity, dt_from_visc);
 	} else {
 			printf("dt = %g (CFL conditions from soundspeed: %g, from gravity %g, from viscosity %g)\n",
-				m_simparams->dt,
+				simparams()->dt,
 				dt_from_sspeed, dt_from_gravity, dt_from_visc);
 	}
 
@@ -522,7 +531,7 @@ void
 Problem::check_maxneibsnum(void)
 {
 	// kernel radius times smoothing factor, rounded to the next integer
-	double r = m_simparams->sfactor*m_simparams->kernelradius;
+	double r = simparams()->sfactor*simparams()->kernelradius;
 	r = ceil(r);
 
 	// volumes are computed using a coefficient which is sligthly more than π
@@ -538,7 +547,7 @@ Problem::check_maxneibsnum(void)
 	// with semi-analytical boundaries, boundary particles
 	// are doubled, so we expand by a factor of 1.5,
 	// again rounding up
-	if (m_simparams->boundarytype == SA_BOUNDARY)
+	if (simparams()->boundarytype == SA_BOUNDARY)
 		maxneibsnum = round_up(3*maxneibsnum/2, 32U);
 
 	// more in general, it's possible to have different particle densities for the
@@ -562,7 +571,7 @@ Problem::check_maxneibsnum(void)
 	//   the neighborhood, which cancels with the (3/2) factor
 	//   TODO check if we should assume 7/8ths instead (particle near vertex
 	//   only has 1/8th of a sphere in the fluid, the rest is all boundaries).
-	double qq = m_deltap/m_physparams->r0; // 1/q
+	double qq = m_deltap/physparams()->r0; // 1/q
 	// double ratio = fmax((21*qq*qq)/(16*r), 1.0); // if we assume 7/8
 	double ratio = fmax((qq*qq)/r, 1.0); // only use this if it gives us _more_ particles
 	// increase maxneibsnum as appropriate
@@ -571,17 +580,17 @@ Problem::check_maxneibsnum(void)
 	maxneibsnum = round_up(maxneibsnum, 32U);
 
 	// if the maxneibsnum was user-set, check against computed minimum
-	if (m_simparams->maxneibsnum) {
-		if (m_simparams->maxneibsnum < maxneibsnum) {
+	if (simparams()->maxneibsnum) {
+		if (simparams()->maxneibsnum < maxneibsnum) {
 			fprintf(stderr, "WARNING: problem-set max neibs num too low! %u < %u\n",
-				m_simparams->maxneibsnum, maxneibsnum);
+				simparams()->maxneibsnum, maxneibsnum);
 		} else {
 			printf("Using problem-set max neibs num %u (safe computed value was %u)\n",
-				m_simparams->maxneibsnum, maxneibsnum);
+				simparams()->maxneibsnum, maxneibsnum);
 		}
 	} else {
 		printf("Using computed max neibs num %u\n", maxneibsnum);
-		m_simparams->maxneibsnum = maxneibsnum;
+		simparams()->maxneibsnum = maxneibsnum;
 	}
 }
 
@@ -589,13 +598,14 @@ Problem::check_maxneibsnum(void)
 float
 Problem::density(float h, int i) const
 {
-	float density = m_physparams->rho0[i];
+	float density = physparams()->rho0[i];
 
 	if (h > 0) {
-		//float g = length(m_physparams->gravity);
-		float g = abs(m_physparams->gravity.z);
-		density = m_physparams->rho0[i]*pow(g*m_physparams->rho0[i]*h/m_physparams->bcoeff[i] + 1,
-				1/m_physparams->gammacoeff[i]);
+		//float g = length(physparams()->gravity);
+		float g = abs(physparams()->gravity.z);
+		// TODO g*rho0*h/B could be simplified to g*h*gamma/(c0*c0)
+		density = physparams()->rho0[i]*pow(g*physparams()->rho0[i]*h/physparams()->bcoeff[i] + 1,
+				1/physparams()->gammacoeff[i]);
 		}
 	return density;
 }
@@ -604,28 +614,60 @@ Problem::density(float h, int i) const
 float
 Problem::density_for_pressure(float P, int i) const
 {
-	return  m_physparams->rho0[i]*pow(P/m_physparams->bcoeff[i] + 1,
-				1/m_physparams->gammacoeff[i]);
+	return  physparams()->rho0[i]*pow(P/physparams()->bcoeff[i] + 1,
+				1/physparams()->gammacoeff[i]);
 }
 
 
 float
 Problem::soundspeed(float rho, int i) const
 {
-	return m_physparams->sscoeff[i]*pow(rho/m_physparams->rho0[i], m_physparams->sspowercoeff[i]);
+	return physparams()->sscoeff[i]*pow(rho/physparams()->rho0[i], physparams()->sspowercoeff[i]);
 }
 
 
 float
 Problem::pressure(float rho, int i) const
 {
-	return m_physparams->bcoeff[i]*(pow(rho/m_physparams->rho0[i], m_physparams->gammacoeff[i]) - 1);
+	return physparams()->bcoeff[i]*(pow(rho/physparams()->rho0[i], physparams()->gammacoeff[i]) - 1);
 }
 
 void
 Problem::add_gage(double3 const& pt)
 {
-	m_simparams->gage.push_back(pt);
+	simparams()->gage.push_back(make_double4(pt.x, pt.y, 0., pt.z));
+}
+
+plane_t
+Problem::implicit_plane(double4 const& p)
+{
+	const double4 midPoint = make_double4(m_origin + m_size/2, 1.0);
+
+	plane_t plane;
+	const double norm = length3(p);
+	const double3 normal = as_double3(p)/norm;
+	plane.normal = make_float3(normal);
+
+	/* For the plane point, we pick the one closest to the center of the domain
+	 * TODO find a better logic ? */
+
+	const double midDist = dot(midPoint, p)/norm;
+	double3 planePoint = as_double3(midPoint) - midDist*normal;
+
+	calc_grid_and_local_pos(planePoint, &plane.gridPos, &plane.pos);
+
+	return plane;
+}
+
+plane_t
+Problem::make_plane(Point const& pt, Vector const& normal)
+{
+	plane_t plane;
+
+	plane.normal = make_float3(normal);
+	calc_grid_and_local_pos(make_double3(pt), &plane.gridPos, &plane.pos);
+
+	return plane;
 }
 
 std::string const&
@@ -704,7 +746,7 @@ Problem::writer_callback(CallbackWriter *,
 bool
 Problem::finished(double t) const
 {
-	double tend(m_simparams->tend);
+	double tend(simparams()->tend);
 	return tend && (t > tend);
 }
 
@@ -1045,7 +1087,7 @@ void Problem::fillDeviceMapByRegularGrid()
 uint
 Problem::max_parts(uint numParts)
 {
-	if (!(m_simparams->simflags & ENABLE_INLET_OUTLET))
+	if (!(simparams()->simflags & ENABLE_INLET_OUTLET))
 		return numParts;
 
 	// we assume that we can't have more particles than by filling the whole domain:
@@ -1065,19 +1107,21 @@ Problem::max_parts(uint numParts)
 void
 Problem::calculateFerrariCoefficient()
 {
-	if (isnan(m_simparams->ferrari)) {
-		if (isnan(m_simparams->ferrariLengthScale)) {
-			m_simparams->ferrari = 0.0f;
-			printf("Ferrari coefficient: %e (default value, disabled)\n", m_simparams->ferrari);
+	if (isnan(simparams()->ferrari)) {
+		if (isnan(simparams()->ferrariLengthScale)) {
+			simparams()->ferrari = 0.0f;
+			printf("Ferrari coefficient: %e (default value, disabled)\n", simparams()->ferrari);
+			if (simparams()->simflags & ENABLE_FERRARI)
+				fprintf(stderr, "WARNING: Ferrari correction enabled, but no coefficient or length scale given!\n");
 			return;
 		}
 		else {
-			m_simparams->ferrari = m_simparams->ferrariLengthScale*1e-3f/m_deltap;
-			printf("Ferrari coefficient: %e (computed from length scale: %e)\n", m_simparams->ferrari, m_simparams->ferrariLengthScale);
+			simparams()->ferrari = simparams()->ferrariLengthScale*1e-3f/m_deltap;
+			printf("Ferrari coefficient: %e (computed from length scale: %e)\n", simparams()->ferrari, simparams()->ferrariLengthScale);
 			return;
 		}
 	}
-	printf("Ferrari coefficient: %e\n", m_simparams->ferrari);
+	printf("Ferrari coefficient: %e\n", simparams()->ferrari);
 	return;
 }
 
@@ -1092,11 +1136,35 @@ Problem::calculateFerrariCoefficient()
 void
 Problem::set_grid_params(void)
 {
-	double influenceRadius = m_simparams->kernelradius*m_simparams->slength;
+	/* When using periodicity, it's important that the world size in the periodic
+	 * direction is an exact multiple of the deltap: if this is not the case,
+	 * fluid filling might use an effective inter-particle distance which is
+	 * “significantly” different from deltap, which would lead particles near
+	 * periodic boundaries to have distance _exactly_ deltap across the boundary,
+	 * but “significantly” different on the same side. While this in general would not
+	 * be extremely important, it can have a noticeable effect at the beginning of the
+	 * simulation, when particles are distributed quite regularly and the difference
+	 * between effective (inner) distance and cross-particle distance can create
+	 * a rather annoying discontinuity.
+	 * So warn if m_size.{x,y,z} is not a multiple of deltap in case of periodicity.
+	 * TODO FIXME this would not be needed if filling was made taking into account
+	 * periodicity and spaced particles accordingly.
+	 */
+	if (simparams()->periodicbound & PERIODIC_X && !is_multiple(m_size.x, m_deltap))
+		fprintf(stderr, "WARNING: problem is periodic in X, but X world size %.9g is not a multiple of deltap (%.g)\n",
+			m_size.x, m_deltap);
+	if (simparams()->periodicbound & PERIODIC_Y && !is_multiple(m_size.y, m_deltap))
+		fprintf(stderr, "WARNING: problem is periodic in Y, but Y world size %.9g is not a multiple of deltap (%.g)\n",
+			m_size.y, m_deltap);
+	if (simparams()->periodicbound & PERIODIC_Z && !is_multiple(m_size.z, m_deltap))
+		fprintf(stderr, "WARNING: problem is periodic in X, but Z world size %.9g is not a multiple of deltap (%.g)\n",
+			m_size.z, m_deltap);
+
+	double influenceRadius = simparams()->kernelradius*simparams()->slength;
 	// with semi-analytical boundaries, we want a cell size which is
 	// deltap/2 + the usual influence radius
 	double cellSide = influenceRadius;
-	if (m_simparams->boundarytype == SA_BOUNDARY)
+	if (simparams()->boundarytype == SA_BOUNDARY)
 		cellSide += m_deltap/2.0f;
 
 	m_gridsize.x = (uint)floor(m_size.x / cellSide);
@@ -1110,7 +1178,7 @@ Problem::set_grid_params(void)
 
 	if (!m_gridsize.x || !m_gridsize.y || !m_gridsize.z) {
 		stringstream ss;
-		ss << "resolution " << m_simparams->slength << " is too low! Resulting grid size would be "
+		ss << "resolution " << simparams()->slength << " is too low! Resulting grid size would be "
 			<< m_gridsize;
 		throw runtime_error(ss.str());
 	}
@@ -1137,7 +1205,7 @@ Problem::set_grid_params(void)
 
 // Compute position in uniform grid (clamping to edges)
 int3
-Problem::calc_grid_pos(const Point&	pos)
+Problem::calc_grid_pos(const Point& pos) const
 {
 	int3 gridPos;
 	gridPos.x = (int)floor((pos(0) - m_origin.x) / m_cellsize.x);
@@ -1150,22 +1218,40 @@ Problem::calc_grid_pos(const Point&	pos)
 	return gridPos;
 }
 
+/// Compute the uniform grid components of a vector
+int3
+Problem::calc_grid_offset(double3 const& vec) const
+{
+	int3 gridOff;
+	gridOff = make_int3(floor(vec/m_cellsize));
+
+	return gridOff;
+}
+
+/// Compute the local (fractional grid cell) components of a vector,
+/// given the vector and its grid offset
+double3
+Problem::calc_local_offset(double3 const& vec, int3 const& gridOff) const
+{
+	return vec - (make_double3(gridOff) + 0.5)*m_cellsize;
+}
+
 
 // Compute address in grid from position
 uint
-Problem::calc_grid_hash(int3 gridPos)
+Problem::calc_grid_hash(int3 gridPos) const
 {
 	return gridPos.COORD3 * m_gridsize.COORD2 * m_gridsize.COORD1 + gridPos.COORD2 * m_gridsize.COORD1 + gridPos.COORD1;
 }
 
 
 void
-Problem::calc_localpos_and_hash(const Point& pos, const particleinfo& info, float4& localpos, hashKey& hash)
+Problem::calc_localpos_and_hash(const Point& pos, const particleinfo& info, float4& localpos, hashKey& hash) const
 {
 	int3 gridPos = calc_grid_pos(pos);
 
 	// automatically choose between long hash (cellHash + particleId) and short hash (cellHash)
-	hash = makeParticleHash( calc_grid_hash(gridPos), info );
+	hash = calc_grid_hash(gridPos);
 
 	localpos.x = float(pos(0) - m_origin.x - (gridPos.x + 0.5)*m_cellsize.x);
 	localpos.y = float(pos(1) - m_origin.y - (gridPos.y + 0.5)*m_cellsize.y);
@@ -1177,7 +1263,7 @@ void
 Problem::init_keps(float* k, float* e, uint numpart, particleinfo* info, float4* pos, hashKey* hash)
 {
 	const float Lm = fmax(2*m_deltap, 1e-5f);
-	const float k0 = pow(0.002f*m_physparams->sscoeff[0], 2);
+	const float k0 = pow(0.002f*physparams()->sscoeff[0], 2);
 	const float e0 = 0.16f*pow(k0, 1.5f)/Lm;
 
 	for (uint i = 0; i < numpart; i++) {
@@ -1210,20 +1296,15 @@ Problem::init_volume(BufferList &buffers, uint numParticles)
 
 void
 Problem::imposeBoundaryConditionHost(
-			float4*			newVel,
-			float4*			newEulerVel,
-			float*			newTke,
-			float*			newEpsilon,
-	const	particleinfo*	info,
-	const	float4*			oldPos,
-			uint*			IOwaterdepth,
-	const	float			t,
-	const	uint			numParticles,
-	const	uint			numOpenBoundaries,
-	const	uint			particleRangeEnd,
-	const	hashKey*		particleHash)
+			MultiBufferList::iterator		bufwrite,
+			MultiBufferList::const_iterator	bufread,
+					uint*			IOwaterdepth,
+			const	float			t,
+			const	uint			numParticles,
+			const	uint			numOpenBoundaries,
+			const	uint			particleRangeEnd)
 {
-	// not implemented
+	fprintf(stderr, "WARNING: open boundaries are present, but imposeBoundaryCondtionHost was not implemented\n");
 	return;
 }
 
@@ -1237,4 +1318,25 @@ void Problem::imposeForcedMovingObjects(
 {
 	// not implemented
 	return;
+}
+
+
+
+
+void Problem::PlaneCut(PointVect& points, const double a, const double b,
+			const double c, const double d)
+{
+	PointVect new_points;
+	new_points.reserve(points.size());
+	//const double norm_factor = sqrt(a*a + b*b + c*c);
+	for (uint i = 0; i < points.size(); i++) {
+		const Point & p = points[i];
+		const double dist = a*p(0) + b*p(1) + c*p(2) + d;
+
+		if (dist >= 0)
+			new_points.push_back(p);
+	}
+
+	points.clear();
+	points = new_points;
 }

@@ -7,7 +7,7 @@
 
     Johns Hopkins University, Baltimore, MD
 
-    This file is part of GPUSPH.
+    This file is part of GPUSPH.
 
     GPUSPH is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -109,6 +109,7 @@ class Cube: public Object {
 		int Fill(PointVect& points, const double dx, const bool fill = true)
 		{ return Fill(points, dx, true, fill);}
 		void InnerFill(PointVect&, const double);
+		void FillOut(PointVect&, const double, const int, const bool);
 		void FillIn(PointVect&, const double, const int, const bool);
 		void FillIn(PointVect&, const double, const int);
 		//@}

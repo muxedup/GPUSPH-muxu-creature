@@ -7,7 +7,7 @@
 
     Johns Hopkins University, Baltimore, MD
 
-    This file is part of GPUSPH.
+    This file is part of GPUSPH.
 
     GPUSPH is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -97,7 +97,7 @@ private:
 	// this, however, would violate the principle that any CUDA-related code should be
 	// handled by GPUWorkers and, secondly, GPUSPH
 	cudaDeviceProp m_deviceProperties;
-	// the setter is private and meant to be called ony by the simulation thread
+	// the setter is private and meant to be called only by the simulation thread
 	void setDeviceProperties(cudaDeviceProp _m_deviceProperties);
 
 	// enable direct p2p memory transfers
@@ -199,6 +199,9 @@ private:
 
 	void printAllocatedMemory();
 
+	void initialize();
+	void finalize();
+
 	// select a BufferList based on the DBLBUFFER_* specification
 	// in the command flags
 	MultiBufferList::iterator getBufferListByCommandFlags(flag_t flags);
@@ -250,6 +253,7 @@ private:
 	void kernel_updatePositions();
 	void kernel_disableOutgoingParts();
 	void kernel_imposeBoundaryCondition();
+	void kernel_initGamma();
 	void kernel_download_iowaterdepth();
 	void kernel_upload_iowaterdepth();
 	/*void uploadMbData();

@@ -7,7 +7,7 @@
 
     Johns Hopkins University, Baltimore, MD
 
-    This file is part of GPUSPH.
+    This file is part of GPUSPH.
 
     GPUSPH is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -36,6 +36,7 @@
 #include "Point.h"
 #include "Vector.h"
 
+class Problem;
 
 class TopoCube: public Object {
 	private:
@@ -54,7 +55,8 @@ class TopoCube: public Object {
 		TopoCube(void);
 		virtual ~TopoCube(void);
 
-		void get_planes(double4 *planes);
+		/// return list of planes in implicit form as double4
+		std::vector<double4> get_planes();
 
 		void SetCubeDem(const float *dem,
 				double sizex, double sizey, double H,

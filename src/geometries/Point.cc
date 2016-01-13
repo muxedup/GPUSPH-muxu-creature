@@ -7,7 +7,7 @@
 
     Johns Hopkins University, Baltimore, MD
 
-    This file is part of GPUSPH.
+    This file is part of GPUSPH.
 
     GPUSPH is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -130,7 +130,7 @@ Point::Point(const float *xx)
 	x[3] = xx[3];
 }
 
-double4 Point::toDouble4()
+double4 Point::toDouble4() const
 {
 	return make_double4(x[0], x[1], x[2], x[3]);
 }
@@ -172,6 +172,11 @@ void Point::SetCoord(double X, double Y, double Z)
 	x[0] = X;
 	x[1] = Y;
 	x[2] = Z;
+}
+
+void Point::SetMass(const double _newVal)
+{
+	x[3] = _newVal;
 }
 
 /// Squared distance from origin
@@ -236,7 +241,7 @@ Point &Point::operator=(double *source)
 	x[0] = source[0];
 	x[1] = source[1];
 	x[2] = source[2];
-		x[3] = source[3];
+	x[3] = source[3];
 	return *this;
 }
 
@@ -287,6 +292,19 @@ Point &Point::operator+=(const Vector &vect)
 }
 
 
+/// Define the Point+=double operator
+/*!	\param vect : dbl
+	\return this = this + dbl
+*/
+Point &Point::operator+=(const double &dbl)
+{
+	x[0] += dbl;
+	x[1] += dbl;
+	x[2] += dbl;
+	return *this;
+}
+
+
 /// Define the Point-=Point operator
 /*!	\param pnt : point
 	\return this = this - pnt
@@ -309,6 +327,19 @@ Point &Point::operator-=(const Vector &vect)
 	x[0] -= vect(0);
 	x[1] -= vect(1);
 	x[2] -= vect(2);
+	return *this;
+}
+
+
+/// Define the Point-=double operator
+/*!	\param vect : dbl
+	\return this = this - dbl
+*/
+Point &Point::operator-=(const double &dbl)
+{
+	x[0] -= dbl;
+	x[1] -= dbl;
+	x[2] -= dbl;
 	return *this;
 }
 
@@ -454,10 +485,19 @@ float4 make_float4(const Point &pt)
 	return make_float4(float(pt(0)), float(pt(1)), float(pt(2)), float(pt(3)));
 }
 
+double4 make_double4(const Point &pt)
+{
+	return make_double4(pt(0), pt(1), pt(2), pt(3));
+}
 
 float3 make_float3(const Point &pt)
 {
 	return make_float3(float(pt(0)), float(pt(1)), float(pt(2)));
+}
+
+double3 make_double3(const Point &pt)
+{
+	return make_double3(pt(0), pt(1), pt(2));
 }
 
 

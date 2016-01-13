@@ -7,7 +7,7 @@
 
     Johns Hopkins University, Baltimore, MD
 
-    This file is part of GPUSPH.
+    This file is part of GPUSPH.
 
     GPUSPH is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -69,7 +69,7 @@ Cylinder::Cylinder(const Point& origin, const double radius, const double height
 
 Cylinder::Cylinder(const Point& origin, const Vector& radius, const Vector& height)
 {
-	if (abs(radius*height) > 1e-8*radius.norm()*height.norm()) {
+	if (fabs(radius*height) > 1e-8*radius.norm()*height.norm()) {
 		std::cout << "Trying to construct a cylinder with non perpendicular radius and axis\n";
 		exit(1);
 	}
@@ -202,11 +202,18 @@ Cylinder::FillIn(PointVect& points, const double dx, const int layers)
 
 
 void
-Cylinder::FillIn(PointVect& points, const double dx, const int layers, const bool fill_tops)
+Cylinder::FillIn(PointVect& points, const double dx, const int _layers, const bool fill_tops)
 {
+	// NOTE - TODO
+	// XProblem calls FillIn with negative number of layers to fill rects in the opposite
+	// direction as the normal. Cubes and other primitives do not support it. This is a
+	// temporary workaround until we decide a common policy for the filling of DYNAMIC
+	// boundary layers consistent for any geometry.
+	int layers = abs(_layers);
+
 	m_origin(3) = m_center(3);
 
-	for (uint l = 1; l <= layers; l++) {
+	for (uint l = 0; l < layers; l++) {
 
 		const double smaller_r = m_r - l * dx;
 		const double smaller_h = m_h - l * 2 * dx;

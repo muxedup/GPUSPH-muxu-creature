@@ -7,7 +7,7 @@
 
     Johns Hopkins University, Baltimore, MD
 
-    This file is part of GPUSPH.
+    This file is part of GPUSPH.
 
     GPUSPH is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -484,6 +484,71 @@ Cube::InnerFill(PointVect& points, const double dx)
 }
 
 
+/// Fill layers of particles outside of the cube, starting at dx/2 from the boundary
+/* Fill the outside of the cube (i.e the cube excluding
+ * the faces) with a fixed number of particle layers starting at
+ * dx/2 from the boundary.
+ *	\param points : vector where the particles will be added
+ *	\param dx : particle spacing
+ *	\param layers : number of layers to fill
+ *	\param fill_top: fill the top
+ */
+void
+Cube::FillOut(PointVect& points, const double dx, const int layers, const bool fill_top)
+{
+	m_origin(3) = m_center(3);
+	const int nx = (int) (m_lx/dx);
+	const int ny = (int) (m_ly/dx);
+	const int nz = (int) (m_lz/dx);
+
+	// Bottom face
+	for (int i = -layers; i < nx + layers; i++)
+		for (int j = -layers; j < ny + layers; j++)
+			for (int k = -layers; k < 0; k++) {
+				Point p = m_origin + (i + 0.5)*m_vx/nx + (j + 0.5)*m_vy/ny + (k + 0.5)*m_vz/nz;
+				points.push_back(p);
+			}
+
+	// Lateral faces
+	for (int i = -layers; i < nx + layers; i++) {
+		for (int j = -layers; j < 0; j++)
+			for (int k = 0; k < nz; k++) {
+				Point p = m_origin + (i + 0.5)*m_vx/nx + (j + 0.5)*m_vy/ny + (k + 0.5)*m_vz/nz;
+				points.push_back(p);
+			}
+		for (int j = ny; j < ny + layers; j++)
+			for (int k = 0; k < nz; k++) {
+				Point p = m_origin + (i + 0.5)*m_vx/nx + (j + 0.5)*m_vy/ny + (k + 0.5)*m_vz/nz;
+				points.push_back(p);
+			}
+	}
+
+	for (int j = -layers; j < ny + layers; j++) {
+		for (int i = -layers; i < 0; i++)
+			for (int k = 0; k < nz; k++) {
+				Point p = m_origin + (i + 0.5)*m_vx/nx + (j + 0.5)*m_vy/ny + (k + 0.5)*m_vz/nz;
+				points.push_back(p);
+			}
+		for (int i = nx; i < nx + layers; i++)
+			for (int k = 0; k < nz; k++) {
+				Point p = m_origin + (i + 0.5)*m_vx/nx + (j + 0.5)*m_vy/ny + (k + 0.5)*m_vz/nz;
+				points.push_back(p);
+			}
+	}
+
+	// Top face
+	if (!fill_top)
+		return;
+
+	for (int i = -layers; i < nx + layers; i++)
+		for (int j = -layers; j < ny + layers; j++)
+			for (int k = nz; k < nz + layers; k++) {
+				Point p = m_origin + (i + 0.5)*m_vx/nx + (j + 0.5)*m_vy/ny + (k + 0.5)*m_vz/nz;
+				points.push_back(p);
+			}
+}
+
+
 /// Fill the cube with layers of particles staring from surface
 /* Fill the cube with layers of particles from the surface to
  * the inside of the cube.
@@ -507,8 +572,15 @@ Cube::FillIn(PointVect& points, const double dx, const int layers)
  *	\param fill_top : if true fill also the top face
  */
 void
-Cube::FillIn(PointVect& points, const double dx, const int layers, const bool fill_top)
+Cube::FillIn(PointVect& points, const double dx, const int _layers, const bool fill_top)
 {
+	// NOTE - TODO
+	// XProblem calls FillIn with negative number of layers to fill rects in the opposite
+	// direction as the normal. Cubes and other primitives do not support it. This is a
+	// temporary workaround until we decide a common policy for the filling of DYNAMIC
+	// boundary layers consistent for any geometry.
+	int layers = abs(_layers);
+
 	m_origin(3) = m_center(3);
 	const int nx = (int) (m_lx/dx);
 	const int ny = (int) (m_ly/dx);

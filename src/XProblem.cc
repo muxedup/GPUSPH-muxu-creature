@@ -1,10 +1,35 @@
+/*  Copyright 2011-2013 Alexis Herault, Giuseppe Bilotta, Robert A. Dalrymple, Eugenio Rustico, Ciro Del Negro
+
+    Istituto Nazionale di Geofisica e Vulcanologia
+        Sezione di Catania, Catania, Italy
+
+    Università di Catania, Catania, Italy
+
+    Johns Hopkins University, Baltimore, MD
+
+    This file is part of GPUSPH.
+
+    GPUSPH is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    GPUSPH is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with GPUSPH.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
 #include <math.h>
 #include <string>
 #include <iostream>
 
 // limits
-#include <float.h>
-#include <limits.h>
+#include <cfloat>
+#include <limits>
 
 #include "Rect.h"
 #include "Disk.h"
@@ -15,7 +40,6 @@
 #include "Torus.h"
 #include "Plane.h"
 #include "STLMesh.h"
-
 #include "XProblem.h"
 #include "GlobalData.h"
 
@@ -27,7 +51,6 @@ XProblem::XProblem(GlobalData *_gdata) : Problem(_gdata)
 {
 	// *** XProblem initialization
 	m_numActiveGeometries = 0;
-	m_numBodies = 0;
 	m_numForcesBodies = 0;
 	m_numFloatingBodies = 0;
 	m_numPlanes = 0;
@@ -57,13 +80,21 @@ void XProblem::release_memory()
 {
 	m_fluidParts.clear();
 	m_boundaryParts.clear();
+	m_testpointParts.clear();
 	// also cleanup object parts
 	for (size_t g = 0, num_geoms = m_geometries.size(); g < num_geoms; g++) {
 		if (m_geometries[g]->enabled)
 			m_geometries[g]->ptr->GetParts().clear();
 		if (m_geometries[g]->hdf5_reader)
 			delete m_geometries[g]->hdf5_reader;
+		if (m_geometries[g]->xyz_reader)
+			delete m_geometries[g]->xyz_reader;
 	}
+}
+
+uint XProblem::suggestedDynamicBoundaryLayers()
+{
+	return (uint)simparams()->get_influence_layers() + 1;
 }
 
 XProblem::~XProblem()
@@ -86,8 +117,8 @@ bool XProblem::initialize()
 	// *** Initialization of minimal physical parameters
 	if (isnan(m_deltap))
 		set_deltap(0.02f);
-	if (isnan(m_physparams->r0))
-		m_physparams->r0 = m_deltap;
+	if (isnan(physparams()->r0))
+		physparams()->r0 = m_deltap;
 
 	// aux vars to compute bounding box
 	Point globalMin = Point(DBL_MAX, DBL_MAX, DBL_MAX);
@@ -103,6 +134,9 @@ bool XProblem::initialize()
 	double highest_water_part = NAN;
 
 	for (size_t g = 0, num_geoms = m_geometries.size(); g < num_geoms; g++) {
+		// aux vars to store bbox of current geometry
+		Point currMin, currMax;
+
 		// ignore planes for bbox
 		if (m_geometries[g]->type == GT_PLANE)
 			continue;
@@ -114,8 +148,10 @@ bool XProblem::initialize()
 		// load HDF5 files
 		if (m_geometries[g]->has_hdf5_file)
 			m_geometries[g]->hdf5_reader->read();
-
-		Point currMin, currMax;
+		else
+		// load XYZ files and store their bounding box, at the same time
+		if (m_geometries[g]->has_xyz_file)
+			m_geometries[g]->xyz_reader->read(&currMin, &currMax);
 
 		// geometries loaded from HDF5 files but not featuring a STL file do not have a
 		// bounding box yet; let's compute it
@@ -137,7 +173,9 @@ bool XProblem::initialize()
 			// TODO: store the so-computed bbox somewhere?
 			// Not using it yet, but we have it for free here
 		} else
-			// all other geometries should have one ready
+		// points loaded from XYZ files already stored their bounding box; all other
+		// geometries should have one ready
+		if (!m_geometries[g]->has_xyz_file)
 			m_geometries[g]->ptr->getBoundingBox(currMin, currMax);
 
 		// global min and max
@@ -167,10 +205,44 @@ bool XProblem::initialize()
 
 	// do not store the number of floating objects (aka ODE bodies) in simparams:
 	// add_moving_body() will increment it and use it for the insertion in the vector
-	//m_simparams->numODEbodies = bodies_counter; // == m_numFloatingBodies;
+	//simparams()->numODEbodies = bodies_counter; // == m_numFloatingBodies;
 
 	// store number of objects (floating + moving + I/O)
-	m_simparams->numOpenBoundaries = open_boundaries_counter;
+	simparams()->numOpenBoundaries = open_boundaries_counter;
+
+	// Increase the world dimensions of a m_deltap quantity. This is necessary
+	// to guarantee a distance of m_deltap between particles of either sides of
+	// periodic boundaries; moreover, for boundaries without any periodicity
+	// it ensures that all particles are within the domain even in case of
+	// numerical rounding errors.
+	globalMin(0) -= (m_deltap/2);
+	globalMax(0) += (m_deltap/2);
+	globalMin(1) -= (m_deltap/2);
+	globalMax(1) += (m_deltap/2);
+	globalMin(2) -= (m_deltap/2);
+	globalMax(2) += (m_deltap/2);
+
+	// compute the number of layers for dynamic boundaries, if not set
+	if (simparams()->boundarytype == DYN_BOUNDARY && m_numDynBoundLayers == 0) {
+		m_numDynBoundLayers = suggestedDynamicBoundaryLayers();
+		printf("Number of dynamic boundary layers not set, autocomputed: %u\n", m_numDynBoundLayers);
+	}
+
+	// Increase the world dimensions for dinamic boundaries in directions without periodicity
+	if (simparams()->boundarytype == DYN_BOUNDARY){
+		if (!(simparams()->periodicbound & PERIODIC_X)){
+			globalMin(0) -= (m_numDynBoundLayers-1)*m_deltap;
+			globalMax(0) += (m_numDynBoundLayers-1)*m_deltap;
+		}
+		if (!(simparams()->periodicbound & PERIODIC_Y)){
+			globalMin(1) -= (m_numDynBoundLayers-1)*m_deltap;
+			globalMax(1) += (m_numDynBoundLayers-1)*m_deltap;
+		}
+		if (!(simparams()->periodicbound & PERIODIC_Z)){
+			globalMin(2) -= (m_numDynBoundLayers-1)*m_deltap;
+			globalMax(2) += (m_numDynBoundLayers-1)*m_deltap;
+		}
+	}
 
 	// set computed world origin and size without overriding possible user choices
 	if (!isfinite(m_origin.x)) m_origin.x = globalMin(0);
@@ -202,8 +274,8 @@ bool XProblem::initialize()
 	}
 
 	// set physical parameters depending on m_maxFall or m_waterLevel: LJ dcoeff, sspeed (through set_density())
-	const float g = length(m_physparams->gravity);
-	m_physparams->dcoeff = 5.0f * g * m_maxFall;
+	const float g = length(physparams()->gravity);
+	physparams()->dcoeff = 5.0f * g * m_maxFall;
 
 	if (!isfinite(m_maxParticleSpeed)) {
 		m_maxParticleSpeed = sqrt(2.0 * g * m_maxFall);
@@ -216,15 +288,15 @@ bool XProblem::initialize()
 	// numerical speed of sound TODO multifluid
 	const float default_c0 = 10.0 * m_maxParticleSpeed;
 
-	if (m_physparams->numFluids() == 0) {
-		m_physparams->add_fluid(default_rho);
+	if (physparams()->numFluids() == 0) {
+		physparams()->add_fluid(default_rho);
 		printf("No fluids specified, assuming water (rho: %g\n",
 			default_rho);
 	}
 
-	for (size_t fluid = 0 ; fluid < m_physparams->numFluids(); ++fluid) {
-		const bool must_set_gamma = isnan(m_physparams->gammacoeff[fluid]);
-		const bool must_set_c0 = isnan(m_physparams->sscoeff[fluid]);
+	for (size_t fluid = 0 ; fluid < physparams()->numFluids(); ++fluid) {
+		const bool must_set_gamma = isnan(physparams()->gammacoeff[fluid]);
+		const bool must_set_c0 = isnan(physparams()->sscoeff[fluid]);
 
 		// tell the user what we're going to do
 		if (must_set_gamma && must_set_c0) {
@@ -242,23 +314,17 @@ bool XProblem::initialize()
 
 		// set the EOS if needed
 		if (must_set_gamma || must_set_c0)
-			m_physparams->set_equation_of_state(
+			physparams()->set_equation_of_state(
 				fluid,
-				must_set_gamma ? default_gamma : m_physparams->gammacoeff[fluid],
-				must_set_c0 ? default_c0 : m_physparams->sscoeff[fluid]);
+				must_set_gamma ? default_gamma : physparams()->gammacoeff[fluid],
+				must_set_c0 ? default_c0 : physparams()->sscoeff[fluid]);
 
 		// set the viscosity if needed
-		if (isnan(m_physparams->kinematicvisc[fluid])) {
+		if (isnan(physparams()->kinematicvisc[fluid])) {
 			printf("Viscosity for fluid %zu not specified, assuming water (nu = %g)\n",
 				fluid, default_kinematic_visc);
-			m_physparams->set_kinematic_visc(fluid, default_kinematic_visc);
+			physparams()->set_kinematic_visc(fluid, default_kinematic_visc);
 		}
-	}
-
-	// compute the number of layers for dynamic boundaries, if not set
-	if (m_simparams->boundarytype == DYN_BOUNDARY && m_numDynBoundLayers == 0) {
-		m_numDynBoundLayers = (uint) ceil(m_simparams->sfactor * m_simparams->kernelradius) + 1;
-		printf("Number of dynamic boundary layers not set, autocomputed: %u\n", m_numDynBoundLayers);
 	}
 
 	// only init ODE if m_numRigidBodies
@@ -269,16 +335,19 @@ bool XProblem::initialize()
 	// TODO ideally we should enable/disable them depending on whether
 	// they are present, but this isn't trivial to do with the static framework
 	// options
-	if (m_numOpenBoundaries > 0 && !(m_simparams->simflags & ENABLE_INLET_OUTLET))
+	if (m_numOpenBoundaries > 0 && !(simparams()->simflags & ENABLE_INLET_OUTLET))
 		throw std::invalid_argument("open boundaries present, but ENABLE_INLET_OUTLET not specified in framework flag");
-	if (m_numOpenBoundaries == 0 && (m_simparams->simflags & ENABLE_INLET_OUTLET))
+	if (m_numOpenBoundaries == 0 && (simparams()->simflags & ENABLE_INLET_OUTLET))
 		throw std::invalid_argument("no open boundaries present, but ENABLE_INLET_OUTLET specified in framework flag");
 
 	// TODO FIXME m_numMovingObjects does not exist yet
 	//if (m_numMovingObjects > 0)
-	//	m_simparams->movingBoundaries = true;
+	//	simparams()->movingBoundaries = true;
 
-	return true;
+	// Call Problem's initialization that takes care of the common
+	// initialization functions (checking dt, preparing the grid,
+	// creating the problem dir, etc)
+	return Problem::initialize();
 }
 
 void XProblem::initializeODE()
@@ -290,9 +359,9 @@ void XProblem::initializeODE()
 	m_ODEWorld = dWorldCreate(); // ODE world for dynamics
 	m_ODESpace = dHashSpaceCreate(0); // ODE world for collisions
 	m_ODEJointGroup = dJointGroupCreate(0);  // Joint group for collision detection
-	// Set gravity（x, y, z)
+	// Set gravity (x, y, z)
 	dWorldSetGravity(m_ODEWorld,
-		m_physparams->gravity.x, m_physparams->gravity.y, m_physparams->gravity.z);
+		physparams()->gravity.x, physparams()->gravity.y, physparams()->gravity.z);
 }
 
 void XProblem::cleanupODE()
@@ -350,8 +419,10 @@ void XProblem::ODE_near_callback(void * data, dGeomID o1, dGeomID o2)
 }
 
 GeometryID XProblem::addGeometry(const GeometryType otype, const FillType ftype, Object* obj_ptr,
-	const char *hdf5_fname, const char *stl_fname)
+	const char *hdf5_fname, const char *xyz_fname, const char *stl_fname)
 {
+	// TODO: before even creating the new GeometryInfo we should check the compatibility of
+	// the combination of paramenters (e.g. no moving planes; no HDF5 testpoints)
 	GeometryInfo* geomInfo = new GeometryInfo();
 	geomInfo->type = otype;
 	geomInfo->fill_type = ftype;
@@ -363,6 +434,14 @@ GeometryID XProblem::addGeometry(const GeometryType otype, const FillType ftype,
 		// TODO: error checking
 		geomInfo->hdf5_reader = new HDF5SphReader();
 		geomInfo->hdf5_reader->setFilename(hdf5_fname);
+	} else
+	if (xyz_fname) {
+		geomInfo->xyz_filename = std::string(xyz_fname);
+		geomInfo->has_xyz_file = true;
+		// initialize the reader
+		// TODO: error checking
+		geomInfo->xyz_reader = new XYZReader();
+		geomInfo->xyz_reader->setFilename(xyz_fname);
 	}
 	if (stl_fname) {
 		geomInfo->stl_filename = std::string(stl_fname);
@@ -402,28 +481,41 @@ GeometryID XProblem::addGeometry(const GeometryType otype, const FillType ftype,
 			geomInfo->handle_dynamics = false;
 			geomInfo->measure_forces = false;
 			break;
+		case GT_TESTPOINTS:
+			geomInfo->handle_collisions = false;
+			geomInfo->handle_dynamics = false;
+			geomInfo->measure_forces = false;
+			break;
 	}
 
 	// --- Default intersection type
 	// It is IT_SUBTRACT by default, except for planes: they are usually used
 	// to delimit the boundaries of the domain, so we likely want to intersect
-	if (geomInfo->type == GT_PLANE)
-		geomInfo->intersection_type = IT_INTERSECT;
-	else
-		geomInfo->intersection_type = IT_SUBTRACT;
+	switch (geomInfo->type) {
+		case GT_PLANE:
+			geomInfo->intersection_type = IT_INTERSECT;
+			break;
+		case GT_TESTPOINTS:
+			geomInfo->intersection_type = IT_NONE;
+			break;
+		default:
+			geomInfo->intersection_type = IT_SUBTRACT;
+	}
 
 	// --- Default erase operation
 	// Upon intersection or subtraction we can choose to interact with fluid
 	// or boundaries. By default, water erases only other water, while boundaries
-	// erase water and other boundaries.
-	if (geomInfo->type == GT_FLUID)
-		geomInfo->erase_operation = ET_ERASE_FLUID;
-	else
-		geomInfo->erase_operation = ET_ERASE_ALL;
-
-	// update bodies counter
-	if (geomInfo->type == GT_MOVING_BODY || geomInfo->type == GT_FLOATING_BODY)
-		m_numBodies++;
+	// erase water and other boundaries. Testpoints eras nothing.
+	switch (geomInfo->type) {
+		case GT_FLUID:
+			geomInfo->erase_operation = ET_ERASE_FLUID;
+			break;
+		case GT_TESTPOINTS:
+			geomInfo->erase_operation = ET_ERASE_NOTHING;
+			break;
+		default:
+			geomInfo->erase_operation = ET_ERASE_ALL;
+	}
 
 	// NOTE: we don't need to check handle_collisions at all, since if there are no bodies
 	// we don't need collisions nor ODE at all
@@ -628,9 +720,12 @@ GeometryID XProblem::addSTLMesh(const GeometryType otype, const FillType ftype, 
 	// shift STL origin to given point
 	stlmesh->shift( make_double3(origin(0) + offsetX, origin(1) + offsetY, origin(2) + offsetZ) );
 
-	return addGeometry(otype, ftype,
+	return addGeometry(
+		otype,
+		ftype,
 		stlmesh,
 		NULL,			// HDF5 filename
+		NULL,			// XYZ filename
 		filename		// STL filename
 	);
 }
@@ -644,6 +739,7 @@ GeometryID XProblem::addHDF5File(const GeometryType otype, const Point &origin,
 	// NOTES about HDF5 files
 	// - fill type is FT_NOFILL since particles are read from file
 	// - may add a null STLMesh if the hdf5 file is given but not the mesh
+	// - should adding an HDF5 file of type GT_TESTPOINTS be forbidden?
 
 	// create an empty STLMesh if the STL filename is not given
 	STLMesh *stlmesh = ( fname_stl == NULL ? new STLMesh(0) : STLMesh::load_stl(fname_stl) );
@@ -652,11 +748,54 @@ GeometryID XProblem::addHDF5File(const GeometryType otype, const Point &origin,
 
 	// NOTE: an empty STL mesh does not return a meaningful bounding box. Will read parts in initialize() for that
 
-	return addGeometry(otype, FT_NOFILL,
+	return addGeometry(
+		otype,
+		FT_NOFILL,
 		stlmesh,
 		fname_hdf5,		// HDF5 filename
+		NULL,			// XYZ filename
 		fname_stl		// STL filename
 	);
+}
+
+// NOTE: particles loaded from XYZ files will not be erased!
+// To enable erase-like interaction we need to copy them to the global particle vectors, by passing an
+// existing vector to loadPointCloudFromXYZFile(). We can implement this if needed.
+GeometryID XProblem::addXYZFile(const GeometryType otype, const Point &origin,
+			const char *fname_xyz, const char *fname_stl)
+{
+	// NOTE: fill type is FT_NOFILL since particles are read from file
+
+	// create an empty STLMesh if the STL filename is not given
+	STLMesh *stlmesh = ( fname_stl == NULL ? new STLMesh(0) : STLMesh::load_stl(fname_stl) );
+
+	// TODO: handle positioning like in addSTLMesh()
+
+	// NOTE: an empty STL mesh does not return a meaningful bounding box. Will read parts for that
+
+	return addGeometry(
+		otype,
+		FT_NOFILL,
+		stlmesh,
+		NULL,			// HDF5 filename
+		fname_xyz,		// XYZ filename
+		fname_stl		// STL filename
+	);
+}
+
+// Add a single testpoint; returns the position of the testpoint in the vector of
+// testpoints, which will correspond to its particle id.
+// NOTE: testpoints should be assigned with consecutive particle ids starting from 0
+size_t XProblem::addTestPoint(const Point &coordinates)
+{
+	m_testpointParts.push_back(coordinates);
+	return (m_testpointParts.size() - 1);
+}
+
+// Simple overload
+size_t XProblem::addTestPoint(const double posx, const double posy, const double posz)
+{
+	return addTestPoint(Point(posx, posy, posz));
 }
 
 // request to invert normals while loading - only for HDF5 files
@@ -665,6 +804,7 @@ void XProblem::flipNormals(const GeometryID gid, bool flip)
 	if (!validGeometry(gid)) return;
 
 	// this makes sense only for geometries loading a HDF5 file
+	// TODO: also enable for planes?
 	if (!m_geometries[gid]->has_hdf5_file) {
 		printf("WARNING: trying to invert normals on a geometry without HDF5-files associated! Ignoring\n");
 		return;
@@ -681,9 +821,6 @@ void XProblem::deleteGeometry(const GeometryID gid)
 
 	// and this is the reason why m_numActiveGeometries not be used to iterate on m_geometries:
 	m_numActiveGeometries--;
-
-	if (m_geometries[gid]->type == GT_MOVING_BODY || m_geometries[gid]->type == GT_FLOATING_BODY)
-		m_numBodies--;
 
 	if (m_geometries[gid]->measure_forces)
 		m_numForcesBodies--;
@@ -762,7 +899,7 @@ void XProblem::enableFeedback(const GeometryID gid)
 	// ensure collisions are consistent with geometry type
 	if (m_geometries[gid]->type != GT_FLOATING_BODY &&
 		m_geometries[gid]->type != GT_MOVING_BODY) {
-		printf("WARNING: collisions only available for floating or moving bodies! Ignoring\n");
+		printf("WARNING: feedback only available for floating or moving bodies! Ignoring\n");
 		return;
 	}
 
@@ -777,7 +914,7 @@ void XProblem::disableFeedback(const GeometryID gid)
 
 	// ensure no-dynamics is consistent with geometry type
 	if (m_geometries[gid]->type == GT_FLOATING_BODY) {
-		printf("WARNING: measuring forces is mandatory for floating bodies! Ignoring\n");
+		printf("WARNING: feedback is mandatory for floating bodies! Ignoring\n");
 		return;
 	}
 
@@ -850,9 +987,30 @@ void XProblem::rotate(const GeometryID gid, const double Xrot, const double Yrot
 
 	// compute single-axes rotations
 	// NOTE: ODE uses clockwise angles for Euler, thus we invert them
-	dQFromAxisAndAngle(qX, 1.0, 0.0, 0.0, -Xrot);
-	dQFromAxisAndAngle(qY, 0.0, 1.0, 0.0, -Yrot);
-	dQFromAxisAndAngle(qZ, 0.0, 0.0, 1.0, -Zrot);
+	// NOTE: ODE has abysmal precision, so we compute the quaternions ourselves:
+	// for each rotation, the real part of the quaternion is cos(angle/2),
+	// and the imaginary part (which for rotations around principal axis
+	// is only 1, 2 or 3) is sin(angle/2); the rest of the components are 0.
+	qX[0] = cos(-Xrot/2); qX[1] = sin(-Xrot/2); qX[2] = qX[3] = 0;
+	qY[0] = cos(-Yrot/2); qY[2] = sin(-Yrot/2); qY[1] = qY[3] = 0;
+	qZ[0] = cos(-Zrot/2); qZ[3] = sin(-Zrot/2); qZ[1] = qZ[2] = 0;
+	// Problem: even with a “nice” angle such as M_PI we might end up
+	// with not-exactly-zero components, so we kill anything which is less
+	// than half the double-precision machine epsilon. If you REALLY care
+	// about angles that differ from quadrant angles by less than 2^-53,
+	// sorry, we don't have enough accuracy for you.
+	if (fabs(qX[0]) < DBL_EPSILON/2)
+		qX[0] = 0;
+	if (fabs(qX[1]) < DBL_EPSILON/2)
+		qX[1] = 0;
+	if (fabs(qY[0]) < DBL_EPSILON/2)
+		qY[0] = 0;
+	if (fabs(qY[2]) < DBL_EPSILON/2)
+		qY[2] = 0;
+	if (fabs(qZ[0]) < DBL_EPSILON/2)
+		qZ[0] = 0;
+	if (fabs(qZ[3]) < DBL_EPSILON/2)
+		qZ[3] = 0;
 
 	// concatenate rotations in order (X, Y, Z)
 	dQMultiply0(qXY, qY, qX);
@@ -868,6 +1026,18 @@ void XProblem::rotate(const GeometryID gid, const double Xrot, const double Yrot
 
 	// rotate with computed quaternion
 	rotate( gid, qXYZ );
+}
+
+void XProblem::shift(const GeometryID gid, const double Xoffset, const double Yoffset, const double Zoffset)
+{
+	if (!validGeometry(gid)) return;
+
+	if (m_geometries[gid]->type == GT_PLANE) {
+		printf("WARNING: shift is not available for planes! Ignoring\n");
+		return;
+	}
+
+	m_geometries[gid]->ptr->shift(make_double3(Xoffset, Yoffset, Zoffset));
 }
 
 void XProblem::setIntersectionType(const GeometryID gid, IntersectionType i_type)
@@ -901,7 +1071,7 @@ double XProblem::setMassByDensity(const GeometryID gid, const double density)
 	if (m_geometries[gid]->type != GT_FLOATING_BODY)
 		printf("WARNING: setting mass of a non-floating body\n");
 
-	const double mass = m_geometries[gid]->ptr->SetMass(m_physparams->r0, density);
+	const double mass = m_geometries[gid]->ptr->SetMass(physparams()->r0, density);
 	m_geometries[gid]->mass_was_set = true;
 
 	return mass;
@@ -911,6 +1081,8 @@ void XProblem::setParticleMass(const GeometryID gid, const double mass)
 {
 	if (!validGeometry(gid)) return;
 
+	// TODO: if SA bounds && geom is not fluid, throw exception or print warning
+
 	m_geometries[gid]->ptr->SetPartMass(mass);
 	m_geometries[gid]->particle_mass_was_set = true;
 }
@@ -919,11 +1091,30 @@ double XProblem::setParticleMassByDensity(const GeometryID gid, const double den
 {
 	if (!validGeometry(gid)) return NAN;
 
-	const double dx = (m_geometries[gid]->type == GT_FLUID ? m_deltap : m_physparams->r0);
+	if ( (m_geometries[gid]->has_xyz_file || m_geometries[gid]->has_hdf5_file) &&
+		 !m_geometries[gid]->has_stl_file)
+		printf("WARNING: setting the mass by density can't work with a point-based geometry without a mesh!\n");
+
+	const double dx = (m_geometries[gid]->type == GT_FLUID ? m_deltap : physparams()->r0);
 	const double particle_mass = m_geometries[gid]->ptr->SetPartMass(dx, density);
 	m_geometries[gid]->particle_mass_was_set = true;
 
 	return particle_mass;
+}
+
+// Flag an open boundary as velocity driven, so its particles will be flagged with
+// as VEL_IO during fill. Use with false to revert to pressure driven.
+// Only makes sense with GT_OPENBOUNDARY geometries.
+void XProblem::setVelocityDriven(const GeometryID gid, bool isVelocityDriven)
+{
+	if (!validGeometry(gid)) return;
+
+	if (m_geometries[gid]->type != GT_OPENBOUNDARY) {
+		printf("WARNING: trying to set as velocity driven a non-GT_OPENBOUNDARY geometry! Ignoring\n");
+		return;
+	}
+
+	m_geometries[gid]->velocity_driven = isVelocityDriven;
 }
 
 const GeometryInfo* XProblem::getGeometryInfo(GeometryID gid)
@@ -948,8 +1139,10 @@ void XProblem::setPositioning(PositioningPolicy positioning)
 
 // Create 6 planes delimiting the box defined by the two points and update (overwrite) the world origin and size.
 // Write their GeometryIDs in planesIds, if given, so that it is possible to delete one or more of them afterwards.
-void XProblem::makeUniverseBox(const double3 corner1, const double3 corner2, GeometryID *planesIds)
+vector<GeometryID> XProblem::makeUniverseBox(const double3 corner1, const double3 corner2)
 {
+	vector<GeometryID> planes;
+
 	// compute min and max
 	double3 min, max;
 	min.x = std::min(corner1.x, corner2.x);
@@ -959,27 +1152,29 @@ void XProblem::makeUniverseBox(const double3 corner1, const double3 corner2, Geo
 	max.y = std::max(corner1.y, corner2.y);
 	max.z = std::max(corner1.z, corner2.z);
 
+	// we need the periodicity to see which planes are needed. If simparams() is NULL,
+	// it means SETUP_FRAMEWORK was not invoked, in which case we assume no periodicity.
+	const Periodicity periodicbound = simparams() ? simparams()->periodicbound : PERIODIC_NONE;
+
 	// create planes
-	GeometryID plane_min_x = addPlane(  1,  0,  0, -min.x);
-	GeometryID plane_max_x = addPlane( -1,  0,  0,  max.x);
-	GeometryID plane_min_y = addPlane(  0,  1,  0, -min.y);
-	GeometryID plane_max_y = addPlane(  0, -1,  0,  max.y);
-	GeometryID plane_min_z = addPlane(  0,  0,  1, -min.z);
-	GeometryID plane_max_z = addPlane(  0,  0, -1,  max.z);
+	if (!(periodicbound & PERIODIC_X)) {
+		planes.push_back(addPlane(  1,  0,  0, -min.x));
+		planes.push_back(addPlane( -1,  0,  0,  max.x));
+	}
+	if (!(periodicbound & PERIODIC_Y)) {
+		planes.push_back(addPlane(  0,  1,  0, -min.y));
+		planes.push_back(addPlane(  0, -1,  0,  max.y));
+	}
+	if (!(periodicbound & PERIODIC_Z)) {
+		planes.push_back(addPlane(  0,  0,  1, -min.z));
+		planes.push_back(addPlane(  0,  0, -1,  max.z));
+	}
 
 	// set world origin and size
 	m_origin = min;
 	m_size = max - min;
 
-	// write in output
-	if (planesIds) {
-		planesIds[0] = plane_min_x;
-		planesIds[1] = plane_max_x;
-		planesIds[2] = plane_min_y;
-		planesIds[3] = plane_max_y;
-		planesIds[4] = plane_min_z;
-		planesIds[5] = plane_max_z;
-	}
+	return planes;
 }
 
 void XProblem::addExtraWorldMargin(const double margin)
@@ -993,11 +1188,14 @@ void XProblem::addExtraWorldMargin(const double margin)
 // set number of layers for dynamic boundaries. Default is 0, which means: autocompute
 void XProblem::setDynamicBoundariesLayers(const uint numLayers)
 {
-	if (m_simparams->boundarytype != DYN_BOUNDARY)
+	if (simparams()->boundarytype != DYN_BOUNDARY)
 		printf("WARNIG: setting number of layers for dynamic boundaries but not using DYN_BOUNDARY!\n");
 
-	if (numLayers > 0 && numLayers < 3)
-		printf("WARNIG: number of layers for dynamic boundaries is low (%u), use at least 3\n", numLayers);
+	// TODO: use autocomputed instead of 3
+	const uint suggestedNumLayers = suggestedDynamicBoundaryLayers();
+	if (numLayers > 0 && numLayers < suggestedNumLayers)
+		printf("WARNIG: number of layers for dynamic boundaries is low (%u), suggested number is %u\n",
+			numLayers, suggestedNumLayers);
 
 	m_numDynBoundLayers = numLayers;
 }
@@ -1015,6 +1213,7 @@ int XProblem::fill_parts()
 	//uint particleCounter = 0;
 	uint bodies_parts_counter = 0;
 	uint hdf5file_parts_counter = 0;
+	uint xyzfile_parts_counter = 0;
 
 	for (size_t g = 0, num_geoms = m_geometries.size(); g < num_geoms; g++) {
 		PointVect* parts_vector = NULL;
@@ -1024,25 +1223,36 @@ int XProblem::fill_parts()
 		if (!m_geometries[g]->enabled) continue;
 
 		// set dx and recipient vector according to geometry type
-		if (m_geometries[g]->type == GT_FLUID) {
-			parts_vector = &m_fluidParts;
-			dx = m_deltap;
-		} else
-		if (m_geometries[g]->type == GT_FLOATING_BODY) {
-			parts_vector = &(m_geometries[g]->ptr->GetParts());
-			dx = m_physparams->r0;
-		} else {
-			parts_vector = &m_boundaryParts;
-			dx = m_physparams->r0;
+		switch (m_geometries[g]->type) {
+			case GT_FLUID:
+				parts_vector = &m_fluidParts;
+				dx = m_deltap;
+				break;
+			case GT_TESTPOINTS:
+				parts_vector = &m_testpointParts;
+				dx = physparams()->r0;
+				break;
+			case GT_FLOATING_BODY:
+			case GT_MOVING_BODY:
+				parts_vector = &(m_geometries[g]->ptr->GetParts());
+				dx = physparams()->r0;
+				break;
+			default:
+				parts_vector = &m_boundaryParts;
+				dx = physparams()->r0;
 		}
 
-		// Now will set the particle and object mass if still unset. We will set
-		// mass by density, using rho of the first fluid.
-		const double DEFAULT_DENSITY = m_physparams->rho0[0];
+		// Now will set the particle and object mass if still unset
+		const double DEFAULT_DENSITY = physparams()->rho0[0];
+		// Setting particle mass by means of dx and default density only. This leads to same mass
+		// everywhere but possibly slightly different densities.
+		const double DEFAULT_PARTICLE_MASS = (dx * dx * dx) * physparams()->rho0[0];
 
 		// Set part mass, if not set already.
 		if (m_geometries[g]->type != GT_PLANE && !m_geometries[g]->particle_mass_was_set)
 			setParticleMassByDensity(g, DEFAULT_DENSITY);
+			// TODO: should the following be an option?
+			//setParticleMass(g, DEFAULT_PARTICLE_MASS);
 
 		// Set object mass for floating objects, if not set already
 		if (m_geometries[g]->type == GT_FLOATING_BODY && !m_geometries[g]->mass_was_set)
@@ -1070,8 +1280,8 @@ int XProblem::fill_parts()
 		// after making some space, fill
 		switch (m_geometries[g]->fill_type) {
 			case FT_BORDER:
-				if (m_simparams->boundarytype == DYN_BOUNDARY)
-					m_geometries[g]->ptr->FillIn(*parts_vector, m_deltap, m_numDynBoundLayers);
+				if (simparams()->boundarytype == DYN_BOUNDARY)
+					m_geometries[g]->ptr->FillIn(*parts_vector, m_deltap, - m_numDynBoundLayers);
 				else
 					m_geometries[g]->ptr->FillBorder(*parts_vector, m_deltap);
 				break;
@@ -1085,9 +1295,19 @@ int XProblem::fill_parts()
 			// yes, it is legal to have no "default:": ISO/IEC 9899:1999, section 6.8.4.2
 		}
 
+		// floating and moving bodies fill in their local point vector; let's increase
+		// the dedicated bodies_parts_counter
+		if (m_geometries[g]->type == GT_FLOATING_BODY ||
+			m_geometries[g]->type == GT_MOVING_BODY) {
+			bodies_parts_counter += m_geometries[g]->ptr->GetParts().size();
+		}
+
 		// geometries loaded from HDF5file do not undergo filling, but should be counted as well
 		if (m_geometries[g]->has_hdf5_file)
 			hdf5file_parts_counter += m_geometries[g]->hdf5_reader->getNParts();
+		// ditto for XYZ files
+		if (m_geometries[g]->has_xyz_file)
+			xyzfile_parts_counter += m_geometries[g]->xyz_reader->getNParts();
 
 #if 0
 		// dbg: fill horizontal XY planes with particles, only within the world domain
@@ -1098,10 +1318,10 @@ int XProblem::fill_parts()
 				continue;
 			// fill will print a warning
 			// NOTE: since parts are added to m_boundaryParts, setting part mass is probably pointless
-			plane->SetPartMass(dx, m_physparams->rho0[0]);
+			plane->SetPartMass(dx, physparams()->rho0[0]);
 			// will round r0 to fit each dimension
-			const uint xpn = (uint) trunc(m_size.x / m_physparams->r0 + 0.5);
-			const uint ypn = (uint) trunc(m_size.y / m_physparams->r0 + 0.5);
+			const uint xpn = (uint) trunc(m_size.x / physparams()->r0 + 0.5);
+			const uint ypn = (uint) trunc(m_size.y / physparams()->r0 + 0.5);
 			// compute Z
 			const double z_coord = - plane->getD() / plane->getC();
 			// aux vectors
@@ -1117,7 +1337,7 @@ int XProblem::fill_parts()
 #endif
 
 		// ODE-related operations - only for floating bodies
-		if (m_geometries[g]->handle_dynamics || m_geometries[g]->handle_collisions) {
+		if (m_numFloatingBodies > 0 && (m_geometries[g]->handle_dynamics || m_geometries[g]->handle_collisions)) {
 
 			// We should not call both ODEBodyCreate() and ODEGeomCreate(), since the former
 			// calls the latter in a dummy way if no ODE space is passed and this messes
@@ -1164,13 +1384,6 @@ int XProblem::fill_parts()
 
 			} // if body has dynamics
 
-			// dynamics-only stuff
-			if (m_geometries[g]->handle_dynamics) {
-				// TODO FIXME MERGE
-				// add_ODE_body(m_geometries[g]->ptr);
-				bodies_parts_counter += m_geometries[g]->ptr->GetParts().size();
-			}
-
 			// update ODE rotation matrix according to possible rotation - excl. planes!
 			if (m_geometries[g]->type != GT_PLANE)
 				m_geometries[g]->ptr->updateODERotMatrix();
@@ -1194,15 +1407,14 @@ int XProblem::fill_parts()
 
 	} // iterate on geometries
 
-	return m_fluidParts.size() + m_boundaryParts.size() + bodies_parts_counter + hdf5file_parts_counter;
+	// call user-set filtering routine, if any
+	filterPoints(m_fluidParts, m_boundaryParts);
+
+	return m_fluidParts.size() + m_boundaryParts.size() + m_testpointParts.size() +
+		bodies_parts_counter + hdf5file_parts_counter + xyzfile_parts_counter;
 }
 
-uint XProblem::fill_planes()
-{
-	return m_numPlanes;
-}
-
-void XProblem::copy_planes(double4 *planes)
+void XProblem::copy_planes(PlaneList &planes)
 {
 	if (m_numPlanes == 0) return;
 	// look for planes
@@ -1218,7 +1430,7 @@ void XProblem::copy_planes(double4 *planes)
 
 		Plane *plane = (Plane*)(m_geometries[gid]->ptr);
 
-		planes[currPlaneIdx] = make_double4( plane->getA(), plane->getB(), plane->getC(), plane->getD() );
+		planes.push_back( implicit_plane( plane->getA(), plane->getB(), plane->getC(), plane->getD() ) );
 
 		currPlaneIdx++;
 	}
@@ -1236,23 +1448,26 @@ void XProblem::copy_to_array(BufferList &buffers)
 	float4 *eulerVel = buffers.getData<BUFFER_EULERVEL>();
 
 	// NOTEs and TODO
-	// - Automatic hydrostatic filling. Or, callback?
 	// - SA currently supported only from file. Support runtime generation?
 	// - Warn if loaded particle has different type than filled, but only once
-	// - Save the id of the first boundary particle that belongs to an ODE object?
-	//   Was in previous code but we probably don't need it
 
 	// particles counters, by type
 	uint fluid_parts = 0;
 	uint boundary_parts = 0;
 	uint vertex_parts = 0;
+	uint testpoint_parts = 0;
 	// count #particles loaded from HDF5 files. Needed also to adjust connectivity afterward
-	uint loaded_parts = 0;
-	// Total number of filled parts, i.e. in GPUSPH array and ready to be uploaded. The following hold:
-	//   total = fluid_parts + boundary_parts + vertex_parts
-	//   total >= loaded_parts
-	//   total >= object_parts
+	uint hdf5_loaded_parts = 0;
+	// count #particles loaded from XYZ files. Only for information
+	uint xyz_loaded_parts = 0;
+	// Total number of filled parts, i.e. in GPUSPH array and ready to be uploaded.
 	uint tot_parts = 0;
+	// The following hold:
+	//   total = fluid_parts + boundary_parts + vertex_parts + testpoint_parts
+	//   total >= hdf5_loaded_parts + xyz_loaded_parts
+	//   total >= object_parts
+	// NOTE: particles loaded from HDF5 or XYZ files are counted both in the respective
+	// *_loaded_parts counter and in the type counter (e.g. fluid_parts).
 
 	// store mass for each particle type
 	double fluid_part_mass = NAN;
@@ -1263,16 +1478,41 @@ void XProblem::copy_to_array(BufferList &buffers)
 	std::map<uint, uint> hdf5idx_to_idx_map;
 
 	// count how many particles will be loaded from file
-	for (size_t g = 0, num_geoms = m_geometries.size(); g < num_geoms; g++)
+	for (size_t g = 0, num_geoms = m_geometries.size(); g < num_geoms; g++) {
 		if (m_geometries[g]->has_hdf5_file)
-			loaded_parts += m_geometries[g]->hdf5_reader->getNParts();
+			hdf5_loaded_parts += m_geometries[g]->hdf5_reader->getNParts();
+		else
+		if (m_geometries[g]->has_xyz_file)
+			xyz_loaded_parts += m_geometries[g]->xyz_reader->getNParts();
+	}
+
+	// copy filled testpoint parts
+	// NOTE: filling testpoint parts first so that if they are a fixed number they will have
+	// the same particle id, independently from the deltap used
+	for (uint i = tot_parts; i < tot_parts + m_testpointParts.size(); i++) {
+		info[i] = make_particleinfo(PT_TESTPOINT, 0, i);
+		calc_localpos_and_hash(m_testpointParts[i - tot_parts], info[i], pos[i], hash[i]);
+		globalPos[i] = m_testpointParts[i - tot_parts].toDouble4();
+		// Compute density for hydrostatic filling. FIXME for multifluid
+		const float rho = (simparams()->boundarytype == DYN_BOUNDARY ?
+			density(m_waterLevel - globalPos[i].z, 0) : m_physparams->rho0[0]);
+		vel[i] = make_float4(0, 0, 0, rho);
+		if (eulerVel)
+			eulerVel[i] = make_float4(0);
+		if (i == tot_parts)
+			boundary_part_mass = pos[i].w;
+	}
+	tot_parts += m_testpointParts.size();
+	testpoint_parts += m_testpointParts.size();
 
 	// copy filled fluid parts
 	for (uint i = tot_parts; i < tot_parts + m_fluidParts.size(); i++) {
-		vel[i] = make_float4(0, 0, 0, m_physparams->rho0[0]);
 		info[i]= make_particleinfo(PT_FLUID,0,i);
-		calc_localpos_and_hash(m_fluidParts[i], info[i], pos[i], hash[i]);
-		globalPos[i] = m_fluidParts[i].toDouble4();
+		calc_localpos_and_hash(m_fluidParts[i - tot_parts], info[i], pos[i], hash[i]);
+		globalPos[i] = m_fluidParts[i - tot_parts].toDouble4();
+		// Compute density for hydrostatic filling. FIXME for multifluid
+		const float rho = density(m_waterLevel - globalPos[i].z, 0);
+		vel[i] = make_float4(0, 0, 0, rho);
 		if (eulerVel)
 			eulerVel[i] = make_float4(0);
 		if (i == tot_parts)
@@ -1283,11 +1523,13 @@ void XProblem::copy_to_array(BufferList &buffers)
 
 	// copy filled boundary parts
 	for (uint i = tot_parts; i < tot_parts + m_boundaryParts.size(); i++) {
-		// TODO: eulerVel
-		vel[i] = make_float4(0, 0, 0, m_physparams->rho0[0]);
 		info[i] = make_particleinfo(PT_BOUNDARY, 0, i);
 		calc_localpos_and_hash(m_boundaryParts[i - tot_parts], info[i], pos[i], hash[i]);
 		globalPos[i] = m_boundaryParts[i - tot_parts].toDouble4();
+		// Compute density for hydrostatic filling. FIXME for multifluid
+		const float rho = (simparams()->boundarytype == DYN_BOUNDARY ?
+			density(m_waterLevel - globalPos[i].z, 0) : physparams()->rho0[0]);
+		vel[i] = make_float4(0, 0, 0, rho);
 		if (eulerVel)
 			eulerVel[i] = make_float4(0);
 		if (i == tot_parts)
@@ -1297,12 +1539,33 @@ void XProblem::copy_to_array(BufferList &buffers)
 	boundary_parts += m_boundaryParts.size();
 
 	// We've already counted the objects in initialize(), but now we need incremental counters
-	uint bodies_counter = 0;
+	// to compute the correct object_id according to the insertion order and body type.
+	// Specifically, object_ids are coherent with the insertion order but floating (ODE) bodies
+	// are assigned first; then forces bodies; and finally moving bodies.
+	// Please note how they count one kind of body, not including the previous category, as
+	// opposite as the global counters (e.g. m_numForcesBodies includes m_numFloatingBodies,
+	// but forces_nonFloating_bodies_incremental does not).
+	// (i.e. it counts forces non-floating bodies only)
+	// Also see Problem::add_moving_body()
+	uint floating_bodies_incremental = 0;
+	uint forces_nonFloating_bodies_incremental = 0;
+	uint moving_nonForces_bodies_incremental = 0;
+	// finally, a counter of all forces bodies (either floating or not), only for printing information
+	uint forces_bodies_incremental = 0;
+	// Open boundaries are orthogonal to any kind of bodies, so their object_id will be simply
+	// equal to the incremental counter.
 	uint open_boundaries_counter = 0;
 	// the number of all the particles of rigid bodies will be used to set s_hRbLastIndex
 	uint bodies_particles_counter = 0;
 	// store particle mass of last added rigid body
 	double rigid_body_part_mass = NAN;
+
+	// Filling s_hRbLastIndex[i] requires the knowledge of the number of particles filled by any
+	// object_id < i. Unfortunately, since object_id does not follow the GeometryID, we do not have
+	// this knowledge. Thus, we prepare a small array we will fill the number of particles per
+	// object, and we will use it at the end of the filling process to fill s_hRbLastIndex[] (and
+	// fix s_hRbFirstIndex - see comments later).
+	uint *body_particle_counters = new uint[m_numForcesBodies];
 
 	// Until now we copied fluid and boundary particles not belonging to floating objects and/or not to be loaded
 	// from HDF5 files. Now we iterate on the geometries with the aim to
@@ -1329,13 +1592,24 @@ void XProblem::copy_to_array(BufferList &buffers)
 
 		// object id (GPUSPH, not ODE) that will be used in particleinfo
 		// TODO: will also be fluid_number for multifluid
+		// NOTE: see comments in the declaration of the counters, above
 		uint object_id = 0;
-		if (m_geometries[g]->type == GT_FLOATING_BODY ||
-			m_geometries[g]->type == GT_MOVING_BODY)
-			object_id = bodies_counter++;
+		if (m_geometries[g]->type == GT_FLOATING_BODY)
+			object_id = floating_bodies_incremental++;
 		else
+		if (m_geometries[g]->type == GT_MOVING_BODY && m_geometries[g]->measure_forces)
+			// forces body; not floating. ID after floating bodies
+			object_id = m_numFloatingBodies + forces_nonFloating_bodies_incremental++;
+		else
+		if (m_geometries[g]->type == GT_MOVING_BODY)
+			// moving body; not floating, no feedback. ID after forces (incl. floating) bodies
+			object_id = m_numForcesBodies + moving_nonForces_bodies_incremental++;
 		if (m_geometries[g]->type == GT_OPENBOUNDARY)
+			// open boundary; nothing to do with bodies
 			object_id = open_boundaries_counter++;
+		// now update the forces bodies counter, which includes floating ones, only for printing info later
+		if (m_geometries[g]->measure_forces)
+			forces_bodies_incremental++;
 
 		// load from HDF5 file, whether fluid, boundary, floating or else
 		if (m_geometries[g]->has_hdf5_file) {
@@ -1348,9 +1622,6 @@ void XProblem::copy_to_array(BufferList &buffers)
 
 				// "i" is the particle index in GPUSPH host arrays, "bi" the one in current HDF5 file)
 				const uint bi = i - tot_parts;
-
-				// TODO: warning as follows? But should be printed only once
-				// if (hdf5Buffer[bi].ParticleType != 0) ... warning, filling with different particle type
 
 				// TODO: define an invalid/unknown particle type?
 				// NOTE: update particle counters here, since current_geometry_particles does not distinguish vertex/bound;
@@ -1377,15 +1648,6 @@ void XProblem::copy_to_array(BufferList &buffers)
 						break;
 				}
 
-				// default density
-				float rho = m_physparams->rho0[0];
-
-				// fix density of fluid parts for hydrostatic filling
-				if (ptype == PT_FLUID)
-					rho = density(m_waterLevel - hdf5Buffer[bi].Coords_2, 0);
-
-				vel[i] = make_float4(0, 0, 0, rho);
-
 				// compute particle info, local pos, cellhash
 				// NOTE: using explicit constructor make_particleinfo_by_ids() since some flags may
 				// be set afterward (e.g. in initializeParticles() callback)
@@ -1402,14 +1664,21 @@ void XProblem::copy_to_array(BufferList &buffers)
 						SET_FLAG(info[i], FG_MOVING_BOUNDARY | FG_COMPUTE_FORCE);
 						break;
 					case GT_OPENBOUNDARY:
-						SET_FLAG(info[i], FG_INLET | FG_OUTLET);
+						const ushort VELOCITY_DRIVEN_FLAG =
+							(m_geometries[g]->velocity_driven ? FG_VELOCITY_DRIVEN : 0);
+						SET_FLAG(info[i], FG_INLET | FG_OUTLET | VELOCITY_DRIVEN_FLAG);
 						break;
 				}
 
 				Point tmppoint = Point(hdf5Buffer[bi].Coords_0, hdf5Buffer[bi].Coords_1, hdf5Buffer[bi].Coords_2,
-					m_physparams->rho0[0]*hdf5Buffer[bi].Volume);
+					physparams()->rho0[0]*hdf5Buffer[bi].Volume);
 				calc_localpos_and_hash(tmppoint, info[i], pos[i], hash[i]);
 				globalPos[i] = tmppoint.toDouble4();
+
+				// Compute density for hydrostatic filling. FIXME for multifluid
+				const float rho = (ptype == PT_FLUID || simparams()->boundarytype == DYN_BOUNDARY ?
+					density(m_waterLevel - globalPos[i].z, 0) : physparams()->rho0[0] );
+				vel[i] = make_float4(0, 0, 0, rho);
 
 				// Update boundary particles counters for rb indices
 				// NOTE: the same check will be done for non-HDF5 bodies
@@ -1433,7 +1702,9 @@ void XProblem::copy_to_array(BufferList &buffers)
 					vertex_part_mass = pos[i].w;
 				// also set rigid_body_part_mass, which is orthogonal the the previous values
 				// TODO: with SA bounds, this value has little meaning or should be split
-				if (m_geometries[g]->type == GT_FLOATING_BODY && !isfinite(rigid_body_part_mass))
+				if ((m_geometries[g]->type == GT_FLOATING_BODY ||
+					 m_geometries[g]->type == GT_MOVING_BODY) &&
+					 !isfinite(rigid_body_part_mass))
 					rigid_body_part_mass = pos[i].w;
 
 				// load boundary-specific data (SA bounds only)
@@ -1467,23 +1738,130 @@ void XProblem::copy_to_array(BufferList &buffers)
 
 			} // for every particle in the HDF5 buffer
 
-		} // if (m_geometries[g]->has_hdf5_file)
+		} else // if (m_geometries[g]->has_hdf5_file)
+		// load from HDF5 file, whether fluid, boundary, floating or else
+		if (m_geometries[g]->has_xyz_file) {
+
+			// read number of particles
+			current_geometry_particles = m_geometries[g]->xyz_reader->getNParts();
+
+			// all particles in XYZ file will have the same type and flags
+			ushort ptype = PT_FLUID;
+			flag_t pflags = 0;
+
+			// update particle counters, set ptype, flags - all same for the whole XYZ geometry
+			switch (m_geometries[g]->type) {
+				case GT_FLUID:
+					ptype = PT_FLUID;
+					fluid_parts += current_geometry_particles;
+					break;
+				case GT_FIXED_BOUNDARY:
+					ptype = PT_BOUNDARY;
+					boundary_parts += current_geometry_particles;
+					break;
+				case GT_TESTPOINTS:
+					ptype = PT_TESTPOINT;
+					testpoint_parts += current_geometry_particles;
+					break;
+				case GT_MOVING_BODY:
+					pflags = FG_MOVING_BOUNDARY;
+					if (m_geometries[g]->measure_forces)
+						pflags |= FG_COMPUTE_FORCE;
+					ptype = PT_BOUNDARY;
+					boundary_parts += current_geometry_particles;
+					break;
+				case GT_FLOATING_BODY:
+					pflags = FG_MOVING_BOUNDARY | FG_COMPUTE_FORCE;
+					ptype = PT_BOUNDARY;
+					boundary_parts += current_geometry_particles;
+					break;
+				case GT_OPENBOUNDARY:
+					const ushort VELOCITY_DRIVEN_FLAG =
+						(m_geometries[g]->velocity_driven ? FG_VELOCITY_DRIVEN : 0);
+					pflags = FG_INLET | FG_OUTLET | VELOCITY_DRIVEN_FLAG;
+					// TODO FIXME: check compatibility with new non-SA inlets
+					ptype = PT_BOUNDARY;
+					boundary_parts += current_geometry_particles;
+					break;
+				}
+			// TODO: nothing else is possible since this is checked while adding the
+			// geometry, should we double-check again? And a default
+
+			// utility pointer
+			const PointVect *xyzBuffer = &(m_geometries[g]->xyz_reader->points);
+
+			// add every particle
+			for (uint i = tot_parts; i < tot_parts + current_geometry_particles; i++) {
+
+				// "i" is the particle index in GPUSPH host arrays, "bi" the one in current XZY file)
+				const uint bi = i - tot_parts;
+
+				// compute particle info, local pos, cellhash
+				// NOTE: using explicit constructor make_particleinfo_by_ids() since some flags may
+				// be set afterward (e.g. in initializeParticles() callback)
+				info[i] = make_particleinfo_by_ids(ptype, 0, object_id, i);
+
+				// set appropriate particle flags
+				SET_FLAG(info[i], pflags);
+
+				// NOTE: reading the mass from the object, even if it is an empty STL
+				Point tmppoint = Point((*xyzBuffer)[bi](0), (*xyzBuffer)[bi](1), (*xyzBuffer)[bi](2),
+					m_geometries[g]->ptr->GetPartMass());
+				calc_localpos_and_hash(tmppoint, info[i], pos[i], hash[i]);
+				globalPos[i] = tmppoint.toDouble4();
+
+				// Compute density for hydrostatic filling. FIXME for multifluid
+				const float rho = (ptype == PT_FLUID || simparams()->boundarytype == DYN_BOUNDARY ?
+					density(m_waterLevel - globalPos[i].z, 0) : physparams()->rho0[0] );
+				vel[i] = make_float4(0, 0, 0, rho);
+
+				// Update boundary particles counters for rb indices
+				// NOTE: the same check will be done for non-HDF5 bodies
+				if (ptype == PT_BOUNDARY && m_geometries[g]->measure_forces) {
+					current_geometry_num_boundary_parts++;
+					if (current_geometry_first_boundary_id == UINT_MAX)
+						current_geometry_first_boundary_id = id(info[i]); // which should be == i
+				}
+
+				if (eulerVel)
+					eulerVel[i] = make_float4(0);
+
+				// store particle mass for current type, if it was not store already
+				if (ptype == PT_FLUID && !isfinite(fluid_part_mass))
+					fluid_part_mass = pos[i].w;
+				else
+				if (ptype == PT_BOUNDARY && !isfinite(boundary_part_mass))
+					boundary_part_mass = pos[i].w;
+				// no else supported yet
+
+				// also set rigid_body_part_mass, which is orthogonal the the previous values
+				if ((m_geometries[g]->type == GT_FLOATING_BODY ||
+					 m_geometries[g]->type == GT_MOVING_BODY) &&
+					 !isfinite(rigid_body_part_mass))
+					rigid_body_part_mass = pos[i].w;
+
+			} // for every particle in the XYZ buffer
+
+		} // if (m_geometries[g]->has_xyz_file)
 
 		// copy particles from the point vector of objects which have not been loaded from file
-		// FIXME: should include MOVING, maybe I/O; also, check: here assuming non-SA?
-		if (m_geometries[g]->type == GT_FLOATING_BODY && !(m_geometries[g]->has_hdf5_file)) {
+		if ( (m_geometries[g]->type == GT_FLOATING_BODY || m_geometries[g]->type == GT_MOVING_BODY)
+				&& !(m_geometries[g]->has_hdf5_file) && !(m_geometries[g]->has_xyz_file)) {
 			// not loading from file: take object vector
 			PointVect & rbparts = m_geometries[g]->ptr->GetParts();
 			current_geometry_particles = rbparts.size();
 			// copy particles
 			for (uint i = tot_parts; i < tot_parts + current_geometry_particles; i++) {
-				vel[i] = make_float4(0, 0, 0, m_physparams->rho0[0]);
 				// TODO FIXME MERGE
 				// NOTE: using explicit constructor make_particleinfo_by_ids() since some flags may
 				// be set afterward (e.g. in initializeParticles() callback)
 				info[i] = make_particleinfo_by_ids(PT_BOUNDARY, 0, object_id, i);
 				calc_localpos_and_hash(rbparts[i - tot_parts], info[i], pos[i], hash[i]);
 				globalPos[i] = rbparts[i - tot_parts].toDouble4();
+				// Compute density for hydrostatic filling. FIXME for multifluid
+				const float rho = (simparams()->boundarytype == DYN_BOUNDARY ?
+					density(m_waterLevel - globalPos[i].z, 0) : physparams()->rho0[0] );
+				vel[i] = make_float4(0, 0, 0, rho);
 				if (eulerVel)
 					// there should be no eulerVel with LJ bounds, but it is safe to init the array anyway
 					eulerVel[i] = make_float4(0);
@@ -1500,10 +1878,9 @@ void XProblem::copy_to_array(BufferList &buffers)
 					case GT_FLOATING_BODY:
 						SET_FLAG(info[i], FG_MOVING_BOUNDARY | FG_COMPUTE_FORCE);
 						break;
-					case GT_OPENBOUNDARY:
-						// floating && inlet possible?
-						SET_FLAG(info[i], FG_INLET | FG_OUTLET);
-						break;
+					// not possible
+					//case GT_OPENBOUNDARY:
+					//	break;
 				}
 
 				// Update boundary particles counters for rb indices
@@ -1521,28 +1898,18 @@ void XProblem::copy_to_array(BufferList &buffers)
 
 		// settings related to objects for which we compute the forces, regardless they were loaded from file or not
 		if (m_geometries[g]->measure_forces) {
-
-			// TODO: when we will need segmented scan on moving objs as well, the update of
-			// s_hRbFirstIndex and s_hRbLastIndex should be moved
-
-			// Store index (currently identical to id) of first object particle plus the number
-			// of previously filled object particles. This, summed to the particle id, will be used
-			// as offset to compute the index in rbforces/torques.
+			// In s_hRbFirstIndex it is stored the id of the first particle of current body (changed
+			// in sign, since it is used as an offset) plus the number of previously filled object
+			// particles. The former addendum is set here, the latter will be added later (when we'll
+			// know the number of particles of all the bodies).
 			gdata->s_hRbFirstIndex[object_id] = - (int)current_geometry_first_boundary_id;
 
 			// update counter of rigid body particles
-			bodies_particles_counter += current_geometry_num_boundary_parts;
-
-			// set s_hRbLastIndex after updating bodies_particles_counter
-			gdata->s_hRbLastIndex[object_id] = bodies_particles_counter - 1;
+			body_particle_counters[object_id] = current_geometry_num_boundary_parts;
 
 			// recap on stdout
-			std::cout << "Rigid body " << bodies_counter << ": " << current_geometry_particles <<
+			std::cout << "Rigid body " << forces_bodies_incremental << ": " << current_geometry_particles <<
 				" parts, mass " << rigid_body_part_mass << ", object mass " << m_geometries[g]->ptr->GetMass() << "\n";
-
-			// DBG info
-			// printf("  DBG: s_hRbFirstIndex[%u] = %d, s_hRbLastIndex[%u] = %u\n", \
-				object_id, gdata->s_hRbFirstIndex[object_id], object_id, gdata->s_hRbLastIndex[object_id]);
 
 			// reset value to spot possible anomalies in next bodies
 			rigid_body_part_mass = NAN;
@@ -1551,24 +1918,38 @@ void XProblem::copy_to_array(BufferList &buffers)
 		// update object num parts
 		if (m_geometries[g]->type == GT_FLOATING_BODY ||
 			m_geometries[g]->type == GT_MOVING_BODY) {
-
 			// set numParts, which will be read while allocating device buffers for obj parts
 			// NOTE: this is strictly necessary only for hdf5-loaded objects, because
-			// when numparts==0, Object uses rbparts.size(). Also, this is probably not
-			// necessary anymore after the update of s_hRbFirstIndex and s_hRbLastIndex
-			// has been moved here
-			m_geometries[g]->ptr->SetNumParts(bodies_particles_counter);
+			// when numparts==0, Object uses rbparts.size().
+			m_geometries[g]->ptr->SetNumParts(current_geometry_num_boundary_parts);
 		}
 
 		// update global particle counter
 		tot_parts += current_geometry_particles;
-
 	} // for each geometry
+
+	// Now we fix s_hRbFirstIndex and fill s_hRbLastIndex. We iterate on all the
+	// forces bodies by means of their object id, which is basically the insertion
+	// order after being sorted by body type, to keep and incremental particle counter.
+	uint incremental_bodies_part_counter = 0;
+	for (uint obj_id = 0; obj_id < m_numForcesBodies; obj_id++) {
+		// s_hRbFirstIndex is currently -first_bound_id; shift it further according to the previous bodies
+		gdata->s_hRbFirstIndex[obj_id] += incremental_bodies_part_counter;
+		// now let's increment incremental_bodies_part_counter with current body
+		incremental_bodies_part_counter += body_particle_counters[obj_id];
+		// memo: s_hRbLastIndex, as used in the reduction, is inclusive (thus -1)
+		gdata->s_hRbLastIndex[obj_id] = incremental_bodies_part_counter - 1;
+#if 0 // DBG info
+		printf(" DBG: s_hRbFirstIndex[%u] = %d, s_hRbLastIndex[%u] = %u\n",
+			obj_id, gdata->s_hRbFirstIndex[obj_id], obj_id, gdata->s_hRbLastIndex[obj_id]);
+#endif
+	}
+	delete [] body_particle_counters;
 
 	// fix connectivity by replacing Crixus' AbsoluteIndex with local index
 	// TODO: instead of iterating on all the particles, we could create a list of boundary particles while
 	// loading them from file, and here iterate only on that vector
-	if (loaded_parts > 0) {
+	if (simparams()->boundarytype == SA_BOUNDARY && hdf5_loaded_parts > 0) {
 		std::cout << "Fixing connectivity..." << std::flush;
 		for (uint i=0; i< tot_parts; i++)
 			if (BOUNDARY(info[i])) {
@@ -1593,13 +1974,25 @@ void XProblem::copy_to_array(BufferList &buffers)
 
 	std::cout << "Fluid: " << fluid_parts << " parts, mass " << fluid_part_mass << "\n";
 	std::cout << "Boundary: " << boundary_parts << " parts, mass " << boundary_part_mass << "\n";
-	if (m_simparams->boundarytype == SA_BOUNDARY)
+	if (simparams()->boundarytype == SA_BOUNDARY)
 		std::cout << "Vertices: " << vertex_parts << " parts, mass " << vertex_part_mass << "\n";
+	std::cout << "Testpoint: " << testpoint_parts << " parts\n";
 	std::cout << "Tot: " << tot_parts << " particles\n";
 	std::flush(std::cout);
 
 	// call user-set initialization routine, if any
 	initializeParticles(buffers, tot_parts);
+}
+
+// callback for filtering out points before they become particles (e.g. unfills/cuts)
+void XProblem::filterPoints(PointVect &fluidParts, PointVect &boundaryParts)
+{
+		// Default: do nothing
+
+	/*
+	// Example usage
+	// TODO
+	*/
 }
 
 // callback for initializing particles with custom values
@@ -1625,47 +2018,4 @@ void XProblem::initializeParticles(BufferList &buffers, const uint numParticles)
 			vel[i].x = 0.1;
 	}
 	*/
-}
-
-void XProblem::init_keps(float*, float*, uint, particleinfo*, float4*, hashKey*)
-{
-	//if (m_simparams->visctype == KEPSVISC)
-	printf("* WARNING: init_keps() not implemented!\n");
-}
-
-void XProblem::setboundconstants(
-	const	PhysParams	*physparams,
-	float3	const&		worldOrigin,
-	uint3	const&		gridSize,
-	float3	const&		cellSize)
-{
-	printf("* WARNING: setboundconstants() not implemented!\n");
-}
-
-void XProblem::imposeBoundaryConditionHost(
-			float4*			newVel,
-			float4*			newEulerVel,
-			float*			newTke,
-			float*			newEpsilon,
-	const	particleinfo*	info,
-	const	float4*			oldPos,
-			uint*			IOwaterdepth,
-	const	float			t,
-	const	uint			numParticles,
-	const	uint			numOpenBoundaries,
-	const	uint			particleRangeEnd,
-	const	hashKey*		particleHash)
-{
-	printf("* WARNING: imposeBoundaryConditionHost() not implemented!\n");
-}
-
-void XProblem::imposeForcedMovingObjects(
-					float3	&gravityCenters,
-					float3	&translations,
-					float*	rotationMatrices,
-			const	uint	ob,
-			const	double	t,
-			const	float	dt)
-{
-	printf("* WARNING: imposeForcedMovingObjects() not implemented!\n");
 }

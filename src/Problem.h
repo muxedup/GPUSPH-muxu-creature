@@ -7,7 +7,7 @@
 
     Johns Hopkins University, Baltimore, MD
 
-    This file is part of GPUSPH.
+    This file is part of GPUSPH.
 
     GPUSPH is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -46,6 +46,8 @@
 #include "simparams.h"
 #include "vector_math.h"
 #include "Object.h"
+#include "MovingBody.h"
+
 #include "buffer.h"
 #include "simframework.h"
 
@@ -63,70 +65,6 @@ using std::string;
 // forward declaration. If a class wants to actually use
 // the callback writer it should include CallbackWriter.h
 class CallbackWriter;
-
-enum MovingBodyType {
-	MB_ODE,
-	MB_FORCES_MOVING,
-	MB_MOVING
-};
-
-typedef struct KinematicData {
-	double3			crot; ///< Center of rotation of the body
-	double3			lvel; ///< Linear velocity
-	double3			avel; ///< Angular velocity
-	EulerParameters	orientation;
-
-	KinematicData():
-		crot(make_double3(0.0)),
-		lvel(make_double3(0.0)),
-		avel(make_double3(0.0)),
-		orientation(EulerParameters())
-	{};
-
-	KinematicData(const KinematicData& kdata) {
-		crot = kdata.crot;
-		lvel = kdata.lvel;
-		avel = kdata.avel;
-		orientation = kdata.orientation;
-	};
-
-	KinematicData& operator = (const KinematicData& source) {
-		crot = source.crot;
-		lvel = source.lvel;
-		avel = source.avel;
-		orientation = source.orientation;
-		return *this;
-	};
-} KinematicData;
-
-typedef struct MovingBodyData {
-	uint				index; ///< Sequential insertion index (NOTE: NOT index in the array)
-	MovingBodyType		type;
-	Object				*object;
-	KinematicData		kdata;
-	KinematicData		initial_kdata;
-
-	MovingBodyData(): index(0), type(MB_MOVING), object(NULL), kdata(KinematicData()), initial_kdata(KinematicData()) {};
-
-	MovingBodyData(const MovingBodyData& mbdata) {
-		index = mbdata.index;
-		type = mbdata.type;
-		object = mbdata.object;
-		kdata = mbdata.kdata;
-		initial_kdata = mbdata.initial_kdata;
-	};
-
-	MovingBodyData& operator = (const MovingBodyData& source) {
-		index = source.index;
-		type = source.type;
-		object = source.object;
-		kdata = source.kdata;
-		initial_kdata = source.initial_kdata;
-		return *this;
-	};
-} MovingBodyData;
-
-typedef std::vector<MovingBodyData *> MovingBodiesVect;
 
 // not including GlobalData.h since it needs the complete definition of the Problem class
 struct GlobalData;
@@ -173,8 +111,7 @@ class Problem {
 		GlobalData	*gdata;
 		const Options		*m_options;					// commodity pointer to gdata->clOptions
 
-		SimParams			*m_simparams;				//< Simulation parameters. They only exist after SETUP_FRAMEWORK
-		PhysParams			*m_physparams;				//< Physical parameters. They only exist after SETUP_FRAMEWORK
+		PhysParams			*m_physparams;				//< Physical parameters
 
 		SimFramework		*m_simframework;			// simulation framework
 
@@ -197,11 +134,7 @@ class Problem {
 			);
 		*/
 
-#define	SETUP_FRAMEWORK(...) do { \
-	m_simframework = new CUDASimFramework< __VA_ARGS__ >(); \
-	m_simparams = m_simframework->get_simparams(); \
-	m_physparams = new PhysParams(); \
-} while (0)
+#define	SETUP_FRAMEWORK(...) m_simframework =  CUDASimFramework< __VA_ARGS__ >()
 
 		// add a filter (MLS, SHEPARD), with given frequency
 #define	addFilter(fltr, freq) m_simframework->addFilterEngine(fltr, freq)
@@ -218,7 +151,7 @@ class Problem {
 		Problem(GlobalData *_gdata);
 
 		// returns true if successful, false if should abort the simulation
-		virtual bool initialize() { return true; };
+		virtual bool initialize();
 
 		virtual ~Problem(void);
 
@@ -234,9 +167,8 @@ class Problem {
 		string const& create_problem_dir();
 
 		Options const& get_options(void) const
-		{
-			return *m_options;
-		}
+		{ return *m_options; }
+
 
 		template <typename T>
 		T
@@ -244,24 +176,16 @@ class Problem {
 		{ return m_options->get(key, _default); }
 
 		double3 const& get_worldorigin(void) const
-		{
-			return m_origin;
-		};
+		{ return m_origin; }
 
 		double3 const& get_worldsize(void) const
-		{
-			return m_size;
-		};
+		{ return m_size; }
 
 		double3 const& get_cellsize(void) const
-		{
-			return m_cellsize;
-		};
+		{ return m_cellsize; }
 
 		uint3 const& get_gridsize(void) const
-		{
-			return m_gridsize;
-		};
+		{ return m_gridsize; }
 
 		float density(float, int) const;
 		float density_for_pressure(float, int) const;
@@ -271,9 +195,7 @@ class Problem {
 		float soundspeed(float, int) const;
 
 		string const& get_dirname(void) const
-		{
-			return m_problem_dir;
-		}
+		{ return m_problem_dir; }
 
 		double set_deltap(const double dflt)
 		{
@@ -282,7 +204,7 @@ class Problem {
 			else
 				m_deltap = dflt;
 			// also udate the smoothing length
-			set_smoothing(m_simparams->sfactor);
+			set_smoothing(simparams()->sfactor);
 
 			return m_deltap;
 		}
@@ -295,64 +217,65 @@ class Problem {
 
 		/* set smoothing factor */
 		double set_smoothing(const double smooth)
-		{
-			return m_simparams->set_smoothing(smooth, m_deltap);
-		}
+		{ return simparams()->set_smoothing(smooth, m_deltap); }
 
 IGNORE_WARNINGS(deprecated-declarations)
 		/* set kernel type and radius */
 		// DEPRECATED, use set_kernel_radius instead
 		double set_kernel(KernelType kernel, double radius=0) DEPRECATED
-		{
-			return m_simparams->set_kernel(kernel, radius);
-		}
+		{ return simparams()->set_kernel(kernel, radius); }
 RESTORE_WARNINGS
 
 		void set_kernel_radius(double radius)
-		{
-			m_simparams->set_kernel_radius(radius);
-		}
+		{ simparams()->set_kernel_radius(radius); }
 
 		void set_grid_params(void);
 
-		int3 calc_grid_pos(const Point&);
+		/// Compute the uniform grid coordinates of a point, clamping to edges
+		int3 calc_grid_pos(const Point&) const;
+		/// Compute the uniform grid components of a vector
+		int3 calc_grid_offset(double3 const& vec) const;
+		/// Compute the local (fractional grid cell) components of a vector,
+		/// given the vector and its grid offset
+		double3 calc_local_offset(double3 const& vec, int3 const& gridOff) const;
 
-		uint calc_grid_hash(int3);
+		uint calc_grid_hash(int3) const;
 
-		void calc_localpos_and_hash(const Point&, const particleinfo&, float4&, hashKey&);
+		void calc_localpos_and_hash(const Point&, const particleinfo&, float4&, hashKey&) const;
 
 		// convert a double3 point into a grid + local position
-		void calc_grid_and_local_pos(double3 const& globalPos, int3 *gridPos, float3 *localPos);
+		void calc_grid_and_local_pos(double3 const& globalPos, int3 *gridPos, float3 *localPos) const;
 
-		const SimParams *get_simparams(void) const
-		{
-			return m_simparams;
-		};
+		inline
+		const SimParams *simparams(void) const
+		{ return m_simframework->simparams(); }
 
-		SimParams *get_simparams(void)
-		{
-			return m_simparams;
-		};
+		inline
+		SimParams *simparams(void)
+		{ return m_simframework->simparams(); }
 
-		const PhysParams *get_physparams(void) const
-		{
-			return m_physparams;
-		};
+		inline
+		const PhysParams *physparams(void) const
+		{ return m_physparams; }
 
-		PhysParams *get_physparams(void)
-		{
-			return m_physparams;
-		};
+		PhysParams *physparams(void)
+		{ return m_physparams; }
 
 		// wrappers for physparams functions
 		size_t add_fluid(float rho)
 		{ return m_physparams->add_fluid(rho); }
+		void set_density(size_t fluid_idx, float _rho0)
+		{ return m_physparams->set_density(fluid_idx, _rho0); }
+		float get_density(size_t fluid_idx)
+		{ return m_physparams->get_density(fluid_idx); }
 		void set_equation_of_state(size_t fluid_idx, float gamma, float c0)
 		{ return m_physparams->set_equation_of_state(fluid_idx, gamma, c0); }
 		void set_kinematic_visc(size_t fluid_idx, float nu)
 		{ return m_physparams->set_kinematic_visc(fluid_idx, nu); }
 		void set_dynamic_visc(size_t fluid_idx, float mu)
 		{ return m_physparams->set_dynamic_visc(fluid_idx, mu); }
+		float get_kinematic_visc(size_t fluid_idx) const
+		{ return m_physparams->get_kinematic_visc(fluid_idx); }
 
 		// simple functions to add gages. the third component
 		// is actually ignored
@@ -365,6 +288,15 @@ RESTORE_WARNINGS
 		inline
 		void add_gage(double x, double y, double z=0)
 		{ add_gage(make_double3(x, y, z)); }
+
+		/// Define a plane with equation ax + by + cz + d
+		plane_t implicit_plane(double4 const& p);
+
+		inline
+		plane_t implicit_plane(double a, double b, double c, double d)
+		{ return implicit_plane(make_double4(a, b, c, d)); }
+
+		plane_t make_plane(Point const& pt, Vector const& normal);
 
 		// set the timer tick
 		// DEPRECATED: use add_writer() with the frequency in seconds
@@ -393,7 +325,7 @@ RESTORE_WARNINGS
 			const bool testpoints) const;
 
 		// is the simulation running at the given time?
-		bool finished(double) const;
+		virtual bool finished(double) const;
 
 		virtual int fill_parts(void) = 0;
 		// maximum number of particles that may be generated
@@ -401,8 +333,7 @@ RESTORE_WARNINGS
 		virtual void copy_to_array(BufferList & ) = 0;
 		virtual void release_memory(void) = 0;
 
-		virtual uint fill_planes(void);
-		virtual void copy_planes(double4* planes);
+		virtual void copy_planes(PlaneList& planes);
 
 		/* moving boundary and gravity callbacks */
 		virtual float3 g_callback(const float t) DEPRECATED;
@@ -455,9 +386,9 @@ RESTORE_WARNINGS
 		post_timestep_callback(const double t);
 
 		virtual void
-		moving_bodies_callback(const uint, Object*, const double, const double, const float3&,
-								const float3&, const KinematicData &, KinematicData &,
-								double3&, EulerParameters&);
+		moving_bodies_callback(const uint index, Object* object, const double t0, const double t1,
+							const float3& force, const float3& torque, const KinematicData& initial_kdata,
+							KinematicData& kdata, double3& dx, EulerParameters& dr);
 
 		void bodies_timestep(const float3 *forces, const float3 *torques, const int step,
 							const double dt, const double t,
@@ -473,26 +404,14 @@ RESTORE_WARNINGS
 		/* Initialize the particle volumes */
 		virtual void init_volume(BufferList &, uint numParticles);
 
-		virtual void
-		setboundconstants(
-			const	PhysParams	*physparams,
-			float3	const&		worldOrigin,
-			uint3	const&		gridSize,
-			float3	const&		cellSize) {};
-
 		virtual void imposeBoundaryConditionHost(
-					float4*			newVel,
-					float4*			newEulerVel,
-					float*			newTke,
-					float*			newEpsilon,
-			const	particleinfo*	info,
-			const	float4*			oldPos,
+			MultiBufferList::iterator		bufwrite,
+			MultiBufferList::const_iterator	bufread,
 					uint*			IOwaterdepth,
 			const	float			t,
 			const	uint			numParticles,
-			const	uint			numObjects,
-			const	uint			particleRangeEnd,
-			const	hashKey*		particleHash);
+			const	uint			numOpenBoundaries,
+			const	uint			particleRangeEnd);
 
 		virtual void imposeForcedMovingObjects(
 					float3	&gravityCenters,
@@ -516,6 +435,8 @@ RESTORE_WARNINGS
 		void fillDeviceMapByRegularGrid();
 		// partition by performing the specified number of cuts along the three cartesian axes
 		void fillDeviceMapByAxesSplits(uint Xslices, uint Yslices, uint Zslices);
+
+		void PlaneCut(PointVect&, const double, const double, const double, const double);
 
 };
 #endif

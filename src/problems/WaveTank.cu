@@ -7,7 +7,7 @@
 
     Johns Hopkins University, Baltimore, MD
 
-    This file is part of GPUSPH.
+    This file is part of GPUSPH.
 
     GPUSPH is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -49,64 +49,73 @@ WaveTank::WaveTank(GlobalData *_gdata) : Problem(_gdata)
 	height = .63;
 	beta = 4.2364*M_PI/180.0;
 
+	// Add objects to the tank
+	use_cyl = false;
+	use_cone = false;
+
 	SETUP_FRAMEWORK(
 	    //viscosity<ARTVISC>,
 		//viscosity<KINEMATICVISC>,
 		viscosity<SPSVISC>,
-		boundary<LJ_BOUNDARY>
-		//boundary<MK_BOUNDARY>
+		boundary<LJ_BOUNDARY>,
+		//boundary<MK_BOUNDARY>,
+		flags<ENABLE_DTADAPT | ENABLE_PLANES>
 	);
 
-	m_size = make_double3(lx, ly, lz + 2.0*height);
-	m_origin = make_double3(0.0, 0.0, -2.0*height);
+	m_size = make_double3(lx, ly, lz);
+	m_origin = make_double3(0, 0, 0);
+	if (use_cyl || use_cone) {
+		m_origin.z -= 2.0*height;
+		m_size.z += 2.0*height;
+	}
 
-	addFilter(SHEPARD_FILTER, 20);
-	  //MLS_FILTER
+	addFilter(SHEPARD_FILTER, 20); // or MLS_FILTER
 
-
-	// Add objects to the tank
-	use_cyl = false;
-	use_cone = false;
+	if (get_option("testpoints", false)) {
+		addPostProcess(TESTPOINTS);
+	}
 
 	// use a plane for the bottom
 	use_bottom_plane = 1;  //1 for plane; 0 for particles
 
 	// SPH parameters
 	set_deltap(0.03f);  //0.005f;
-	m_simparams->dt = 0.0001;
-	m_simparams->dtadaptfactor = 0.2;
-	m_simparams->buildneibsfreq = 10;
-	m_simparams->tend = 10.0f; //seconds
+	simparams()->dt = 0.0001;
+	simparams()->dtadaptfactor = 0.2;
+	simparams()->buildneibsfreq = 10;
+	simparams()->tend = 10.0f; //seconds
 
 	//WaveGage
-//	add_gage(1, 0.3);
-//	add_gage(0.5, 0.3);
+	if (get_option("gages", false)) {
+		add_gage(1, 0.3);
+		add_gage(0.5, 0.3);
+	}
 
 	// Physical parameters
 	H = 0.45;
-	m_physparams->gravity = make_float3(0.0f, 0.0f, -9.81f);
-	float g = length(m_physparams->gravity);
+	physparams()->gravity = make_float3(0.0f, 0.0f, -9.81f);
+	float g = length(physparams()->gravity);
 
 	float r0 = m_deltap;
-	m_physparams->r0 = r0;
+	physparams()->r0 = r0;
 
 	add_fluid( 1000.0f);
 	set_equation_of_state(0,  7.0f, 20.f);
 	set_kinematic_visc(0,1.0e-6);
 
-	m_physparams->artvisccoeff =  0.2;
-	m_physparams->smagfactor = 0.12*0.12*m_deltap*m_deltap;
-	m_physparams->kspsfactor = (2.0/3.0)*0.0066*m_deltap*m_deltap;
-	m_physparams->epsartvisc = 0.01*m_simparams->slength*m_simparams->slength;
+	physparams()->artvisccoeff =  0.2;
+	physparams()->smagfactor = 0.12*0.12*m_deltap*m_deltap;
+	physparams()->kspsfactor = (2.0/3.0)*0.0066*m_deltap*m_deltap;
+	physparams()->epsartvisc = 0.01*simparams()->slength*simparams()->slength;
 
 	// BC when using LJ
-	m_physparams->dcoeff = 0.5*g*H;
+	physparams()->dcoeff = 0.5*g*H;
 	//set p1coeff,p2coeff, epsxsph here if different from 12.,6., 0.5
 
 	// BC when using MK
-	m_physparams->MK_K = g*H;
-	m_physparams->MK_d = 1.1*m_deltap/MK_par;
-	m_physparams->MK_beta = MK_par;
+	physparams()->MK_K = g*H;
+	physparams()->MK_d = 1.1*m_deltap/MK_par;
+	physparams()->MK_beta = MK_par;
 
 	//Wave paddle definition:  location, start & stop times, stroke and frequency (2 \pi/period)
 
@@ -170,8 +179,8 @@ WaveTank::moving_bodies_callback(const uint index, Object* object, const double 
 
 int WaveTank::fill_parts()
 {
-	const float r0 = m_physparams->r0;
-	const float br = (m_simparams->boundarytype == MK_BOUNDARY ? m_deltap/MK_par : r0);
+	const float r0 = physparams()->r0;
+	const float br = (simparams()->boundarytype == MK_BOUNDARY ? m_deltap/MK_par : r0);
 
 	experiment_box = Cube(Point(0, 0, 0), h_length + slope_length,ly, height);
 
@@ -181,7 +190,7 @@ int WaveTank::fill_parts()
     const float amplitude = -paddle_amplitude ;
 	paddle = Rect(Point(paddle_origin), Vector(0, paddle_width, 0),
 				Vector(paddle_length*sin(amplitude), 0, paddle_length*cos(amplitude)));
-    paddle.SetPartMass(m_deltap, m_physparams->rho0[0]);
+    paddle.SetPartMass(m_deltap, physparams()->rho0[0]);
 	paddle.Fill(paddle.GetParts(), br, true);
 	add_moving_body(&paddle, MB_MOVING);
 	set_body_cg(&paddle, paddle_origin);
@@ -190,7 +199,7 @@ int WaveTank::fill_parts()
 		//	Vector(slope_length/cos(beta), 0.0, slope_length*tan(beta)));
 		 Vector(0.0,0.0,paddle_length));
 	if (!use_bottom_plane) {
-	   bottom_rect.SetPartMass(m_deltap, m_physparams->rho0[0]);
+	   bottom_rect.SetPartMass(m_deltap, physparams()->rho0[0]);
 	   bottom_rect.Fill(boundary_parts,br,true);
 	   }
 
@@ -203,13 +212,12 @@ int WaveTank::fill_parts()
 		float l = h_length + z/tan(beta) - 1.5*r0/sin(beta) - x;
 		fluid = Rect(Point(x,  r0, z),
 				Vector(0, ly-2.0*r0, 0), Vector(l, 0, 0));
-		fluid.SetPartMass(m_deltap, m_physparams->rho0[0]);
+		fluid.SetPartMass(m_deltap, physparams()->rho0[0]);
 		fluid.Fill(parts, m_deltap, true);
 		n++;
 	 }
 
-/*
-	if (m_simparams->testpoints) {
+	if (m_simframework->hasPostProcessEngine(TESTPOINTS)) {
 		Point pos = Point(0.5748, 0.1799, 0.2564, 0.0);
 		test_points.push_back(pos);
 		pos = Point(0.5748, 0.2799, 0.2564, 0.0);
@@ -217,7 +225,7 @@ int WaveTank::fill_parts()
 		pos = Point(1.5748, 0.2799, 0.2564, 0.0);
 		test_points.push_back(pos);
 	}
-*/
+
 	if (use_cyl) {
 		Point p[10];
 		p[0] = Point(h_length + slope_length/(cos(beta)*10), ly/2., 0);
@@ -234,7 +242,7 @@ int WaveTank::fill_parts()
 
 		for (int i = 0; i < 11; i++) {
 			cyl[i] = Cylinder(p[i], Vector(.025, 0, 0), Vector(0, 0, height));
-			cyl[i].SetPartMass(m_deltap, m_physparams->rho0[0]);
+			cyl[i].SetPartMass(m_deltap, physparams()->rho0[0]);
 			cyl[i].FillBorder(boundary_parts, br, false, false);
 			cyl[i].Unfill(parts, br);
 		}
@@ -242,39 +250,27 @@ int WaveTank::fill_parts()
 	if (use_cone) {
 		Point p1 = Point(h_length + slope_length/(cos(beta)*10), ly/2, 0);
 		cone = Cone(p1,Vector(ly/4, 0.0, 0.0), Vector(ly/10, 0., 0.), Vector(0, 0, height));
-		cone.SetPartMass(m_deltap, m_physparams->rho0[0]);
+		cone.SetPartMass(m_deltap, physparams()->rho0[0]);
 		cone.FillBorder(boundary_parts, br, false, true);
 		cone.Unfill(parts, br);
     }
 
-	return  boundary_parts.size() + get_bodies_numparts() +parts.size(); // + test_points.size();
+	return  boundary_parts.size() + get_bodies_numparts() + parts.size() + test_points.size();
 }
 
-
-uint WaveTank::fill_planes()
-{
-    if (!use_bottom_plane) {
-		return 5;
-		}
-	else {
-		return 6;
-		} //corresponds to number of planes
-}
-
-
-void WaveTank::copy_planes(double4 *planes)
+void WaveTank::copy_planes(PlaneList &planes)
 {
 	const double w = m_size.y;
 	const double l = h_length + slope_length;
 
 	//  plane is defined as a x + by +c z + d= 0
-	planes[0] = make_double4(0, 0, 1.0, 0);   //bottom, where the first three numbers are the normal, and the last is d.
-	planes[1] = make_double4(0, 1.0, 0, 0);   //wall
-	planes[2] = make_double4(0, -1.0, 0, w); //far wall
-	planes[3] = make_double4(1.0, 0, 0, 0);  //end
-	planes[4] = make_double4(-1.0, 0, 0, l);  //one end
+	planes.push_back( implicit_plane(0, 0, 1.0, 0) );   //bottom, where the first three numbers are the normal, and the last is d.
+	planes.push_back( implicit_plane(0, 1.0, 0, 0) );   //wall
+	planes.push_back( implicit_plane(0, -1.0, 0, w) ); //far wall
+	planes.push_back( implicit_plane(1.0, 0, 0, 0) );  //end
+	planes.push_back( implicit_plane(-1.0, 0, 0, l) );  //one end
 	if (use_bottom_plane)  {
-		planes[5] = make_double4(-sin(beta),0,cos(beta), h_length*sin(beta));  //sloping bottom starting at x=h_length
+		planes.push_back( implicit_plane(-sin(beta),0,cos(beta), h_length*sin(beta)) );  //sloping bottom starting at x=h_length
 	}
 }
 
@@ -286,25 +282,24 @@ void WaveTank::copy_to_array(BufferList &buffers)
 	particleinfo *info = buffers.getData<BUFFER_INFO>();
 
 	int j = 0;
-	/*
+
 	if (test_points.size()) {
 		//Testpoints
 		std::cout << "\nTest points: " << test_points.size() << "\n";
 		std::cout << "      " << j << "--" << test_points.size() << "\n";
 		for (uint i = 0; i < test_points.size(); i++) {
-			vel[i] = make_float4(0, 0, 0, m_physparams->rho0[0]);
-			info[i]= make_particleinfo(TESTPOINTSPART, 0, i);  // first is type, object, 3rd id
+			vel[i] = make_float4(0, 0, 0, physparams()->rho0[0]);
+			info[i]= make_particleinfo(PT_TESTPOINT, 0, i);  // first is type, object, 3rd id
 			calc_localpos_and_hash(test_points[i], info[i], pos[i], hash[i]);
 		}
 		j += test_points.size();
 		std::cout << "Test point mass:" << pos[j-1].w << "\n";
 	}
-	*/
 
 	std::cout << "\nBoundary parts: " << boundary_parts.size() << "\n";
 	std::cout << "      " << j  << "--" << boundary_parts.size() << "\n";
 	for (uint i = j; i < j + boundary_parts.size(); i++) {
-		vel[i] = make_float4(0, 0, 0, m_physparams->rho0[0]);
+		vel[i] = make_float4(0, 0, 0, physparams()->rho0[0]);
 		info[i]= make_particleinfo(PT_BOUNDARY, 0, i);  // first is type, object, 3rd id
 		calc_localpos_and_hash(boundary_parts[i-j], info[i], pos[i], hash[i]);
 	}
@@ -321,7 +316,7 @@ void WaveTank::copy_to_array(BufferList &buffers)
 				if (ht < 0)
 					ht = 0.0;
 				float rho = density(ht, 0);
-				rho = m_physparams->rho0[0];
+				rho = physparams()->rho0[0];
 				vel[ij] = make_float4(0, 0, 0, rho);
 				uint ptype = (uint) PT_BOUNDARY;
 				switch (m_bodies[k]->type) {
@@ -338,7 +333,7 @@ void WaveTank::copy_to_array(BufferList &buffers)
 				info[ij] = make_particleinfo(ptype, k, ij);
 				calc_localpos_and_hash(rbparts[i], info[ij], pos[ij], hash[ij]);
 			}
-			if (k < m_simparams->numforcesbodies) {
+			if (k < simparams()->numforcesbodies) {
 				gdata->s_hRbFirstIndex[k] = -j + object_particle_counter;
 				gdata->s_hRbLastIndex[k] = object_particle_counter + rbparts.size() - 1;
 				object_particle_counter += rbparts.size();
@@ -351,7 +346,7 @@ void WaveTank::copy_to_array(BufferList &buffers)
 	std::cout << "\nFluid parts: " << parts.size() << "\n";
 	std::cout << "      "<< j  << "--" << j + parts.size() << "\n";
 	for (uint i = j; i < j + parts.size(); i++) {
-		vel[i] = make_float4(0, 0, 0, m_physparams->rho0[0]);
+		vel[i] = make_float4(0, 0, 0, physparams()->rho0[0]);
 		info[i]= make_particleinfo(PT_FLUID, 0, i);
 		calc_localpos_and_hash(parts[i-j], info[i], pos[i], hash[i]);
 	}

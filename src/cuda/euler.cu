@@ -7,7 +7,7 @@
 
     Johns Hopkins University, Baltimore, MD
 
-    This file is part of GPUSPH.
+    This file is part of GPUSPH.
 
     GPUSPH is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -29,6 +29,7 @@
 #include "define_buffers.h"
 #include "engine_integration.h"
 #include "utils.h"
+#include "euler_params.h"
 
 #include "euler_kernel.cu"
 
@@ -38,6 +39,7 @@ template<
 	SPHFormulation sph_formulation,
 	BoundaryType boundarytype,
 	KernelType kerneltype,
+	ViscosityType visctype,
 	flag_t simflags>
 class CUDAPredCorrEngine : public AbstractIntegrationEngine
 {
@@ -48,21 +50,6 @@ setconstants(const PhysParams *physparams,
 	idx_t const& allocatedParticles, int const& maxneibsnum, float const& slength)
 {
 	CUDA_SAFE_CALL(cudaMemcpyToSymbol(cueuler::d_epsxsph, &physparams->epsxsph, sizeof(float)));
-
-	CUDA_SAFE_CALL(cudaMemcpyToSymbol(cueuler::d_worldOrigin, &worldOrigin, sizeof(float3)));
-	CUDA_SAFE_CALL(cudaMemcpyToSymbol(cueuler::d_cellSize, &cellSize, sizeof(float3)));
-	CUDA_SAFE_CALL(cudaMemcpyToSymbol(cueuler::d_gridSize, &gridSize, sizeof(uint3)));
-	// Neibs cell to offset table
-	char3 cell_to_offset[27];
-	for(char z=-1; z<=1; z++) {
-		for(char y=-1; y<=1; y++) {
-			for(char x=-1; x<=1; x++) {
-				int i = (x + 1) + (y + 1)*3 + (z + 1)*9;
-				cell_to_offset[i] =  make_char3(x, y, z);
-			}
-		}
-	}
-	CUDA_SAFE_CALL(cudaMemcpyToSymbol(cueuler::d_cell_to_offset, cell_to_offset, 27*sizeof(char3)));
 
 	idx_t neiblist_end = maxneibsnum*allocatedParticles;
 	CUDA_SAFE_CALL(cudaMemcpyToSymbol(cueuler::d_neiblist_stride, &allocatedParticles, sizeof(idx_t)));
@@ -163,12 +150,17 @@ basicstep(
 	// boundary elements are updated in-place; only used for rotation in the second step
 	float4 *newBoundElement = bufwrite->getData<BUFFER_BOUNDELEMENTS>();
 
-#define ARGS oldPos, particleHash, neibsList, cellStart, oldVel, oldVol, oldEulerVel, oldgGam, oldTKE, oldEps, vertPos, info, forces, contupd, keps_dkde, xsph, newPos, newVel, newVol, newEulerVel, newgGam, newTKE, newEps, newBoundElement, particleRangeEnd, step, dt, dt2, t, slength, influenceradius
+	euler_params<kerneltype, sph_formulation, boundarytype, visctype, simflags> params(
+			newPos, newVel, oldPos, particleHash, oldVel, info, forces, numParticles, dt, dt2, t, step,
+			xsph,
+			oldgGam, newgGam, contupd, newEulerVel, newBoundElement, vertPos, oldEulerVel, slength, influenceradius, neibsList, cellStart,
+			newTKE, newEps, oldTKE, oldEps, keps_dkde,
+			newVol, oldVol);
 
 	if (step == 1) {
-		cueuler::eulerDevice<sph_formulation, boundarytype, kerneltype, simflags><<< numBlocks, numThreads >>>(ARGS);
+		cueuler::eulerDevice<kerneltype, sph_formulation, boundarytype, visctype, simflags><<< numBlocks, numThreads >>>(params);
 	} else if (step == 2) {
-		cueuler::eulerDevice<sph_formulation, boundarytype, kerneltype, simflags><<< numBlocks, numThreads >>>(ARGS);
+		cueuler::eulerDevice<kerneltype, sph_formulation, boundarytype, visctype, simflags><<< numBlocks, numThreads >>>(params);
 	} else {
 		throw std::invalid_argument("unsupported predcorr timestep");
 	}
@@ -176,7 +168,7 @@ basicstep(
 #undef ARGS
 
 	// check if kernel invocation generated an error
-	CUT_CHECK_ERROR("Euler kernel execution failed");
+	KERNEL_CHECK_ERROR;
 }
 
 };

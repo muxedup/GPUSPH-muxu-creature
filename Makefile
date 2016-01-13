@@ -94,35 +94,42 @@ LIST_CUDA_CC=$(SCRIPTSDIR)/list-cuda-cc
 GPUDEPS = $(MAKEFILE).gpu
 CPUDEPS = $(MAKEFILE).cpu
 
+# all files under $(SRCDIR), needed by tags files
+ALLSRCFILES = $(shell find $(SRCDIR) -type f)
+
 # .cc source files (CPU)
 MPICXXFILES = $(SRCDIR)/NetworkManager.cc
 ifeq ($(USE_HDF5),2)
 	MPICXXFILES += $(SRCDIR)/HDF5SphReader.cc
 endif
 
+PROBLEM_DIR=$(SRCDIR)/problems
+USER_PROBLEM_DIR=$(SRCDIR)/problems/user
+
 SRCSUBS=$(sort $(filter %/,$(wildcard $(SRCDIR)/*/)))
 SRCSUBS:=$(SRCSUBS:/=)
-OBJSUBS=$(patsubst $(SRCDIR)/%,$(OBJDIR)/%,$(SRCSUBS))
-
-PROBLEM_DIR=$(SRCDIR)/problems
+OBJSUBS=$(patsubst $(SRCDIR)/%,$(OBJDIR)/%,$(SRCSUBS) $(USER_PROBLEM_DIR))
 
 # list of problems
-PROBLEM_LIST = $(notdir $(basename $(wildcard $(PROBLEM_DIR)/*.h)))
+PROBLEM_LIST = $(foreach adir, $(PROBLEM_DIR) $(USER_PROBLEM_DIR), \
+	$(notdir $(basename $(wildcard $(adir)/*.h))))
+
 # only one problem is active at a time, this is the list of all other problems
 INACTIVE_PROBLEMS = $(filter-out $(PROBLEM),$(PROBLEM_LIST))
 # we don't want to build inactive problems, so we will filter them out
 # from the sources list
-PROBLEM_FILTER = \
-	$(patsubst %,$(PROBLEM_DIR)/%.cc,$(INACTIVE_PROBLEMS)) \
-	$(patsubst %,$(PROBLEM_DIR)/%.cu,$(INACTIVE_PROBLEMS)) \
-	$(patsubst %,$(PROBLEM_DIR)/%_BC.cu,$(INACTIVE_PROBLEMS))
+PROBLEM_FILTER = $(foreach adir, $(PROBLEM_DIR) $(USER_PROBLEM_DIR), \
+	$(patsubst %,$(adir)/%.cc,$(INACTIVE_PROBLEMS)) \
+	$(patsubst %,$(adir)/%.cu,$(INACTIVE_PROBLEMS)) \
+	$(patsubst %,$(adir)/%_BC.cu,$(INACTIVE_PROBLEMS)))
 
 # list of problem source files
-PROBLEM_SRCS = $(filter \
-	$(PROBLEM_DIR)/$(PROBLEM).cc \
-	$(PROBLEM_DIR)/$(PROBLEM).cu \
-	$(PROBLEM_DIR)/$(PROBLEM)_BC.cu,\
-	$(wildcard $(SRCDIR)/problems/*))
+PROBLEM_SRCS = $(foreach adir, $(PROBLEM_DIR) $(USER_PROBLEM_DIR), \
+	$(filter \
+		$(adir)/$(PROBLEM).cc \
+		$(adir)/$(PROBLEM).cu \
+		$(adir)/$(PROBLEM)_BC.cu,\
+		$(wildcard $(adir)/*)))
 
 # list of .cc files, exclusing MPI sources and disabled problems
 CCFILES = $(filter-out $(PROBLEM_FILTER),\
@@ -236,7 +243,6 @@ PROBLEM_SELECT_OPTFILE=$(OPTSDIR)/problem_select.opt
 DBG_SELECT_OPTFILE=$(OPTSDIR)/dbg_select.opt
 COMPUTE_SELECT_OPTFILE=$(OPTSDIR)/compute_select.opt
 FASTMATH_SELECT_OPTFILE=$(OPTSDIR)/fastmath_select.opt
-HASH_KEY_SIZE_SELECT_OPTFILE=$(OPTSDIR)/hash_key_size_select.opt
 MPI_SELECT_OPTFILE=$(OPTSDIR)/mpi_select.opt
 HDF5_SELECT_OPTFILE=$(OPTSDIR)/hdf5_select.opt
 
@@ -247,7 +253,6 @@ OPTFILES=$(PROBLEM_SELECT_OPTFILE) \
 		 $(DBG_SELECT_OPTFILE) \
 		 $(COMPUTE_SELECT_OPTFILE) \
 		 $(FASTMATH_SELECT_OPTFILE) \
-		 $(HASH_KEY_SIZE_SELECT_OPTFILE) \
 		 $(MPI_SELECT_OPTFILE) \
 		 $(HDF5_SELECT_OPTFILE) \
 		 $(GPUSPH_VERSION_OPTFILE)
@@ -275,7 +280,7 @@ ifdef problem
 		endif
 		# empty string in sed for Mac compatibility
 		TMP:=$(shell test -e $(PROBLEM_SELECT_OPTFILE) && \
-			$(SED_COMMAND) 's/$(PROBLEM)/$(problem)/' $(PROBLEM_SELECT_OPTFILE) )
+			$(SED_COMMAND) 's:$(PROBLEM):$(problem):' $(PROBLEM_SELECT_OPTFILE) )
 		# user choice
 		PROBLEM=$(problem)
 	endif
@@ -325,22 +330,6 @@ else
 	FASTMATH ?= 0
 endif
 
-# option: hash_key_size - Size in bits of the hash used to sort particles, currently 32 or 64. Must
-# option:                 be 64 to enable multi-device simulations. For single-device simulations,
-# option:                 can be set to 32 to reduce memory usage. Default: 64
-ifdef hash_key_size
-	# does it differ from last?
-	ifneq ($(HASH_KEY_SIZE),$(hash_key_size))
-		TMP:=$(shell test -e $(HASH_KEY_SIZE_SELECT_OPTFILE) && \
-			$(SED_COMMAND) 's/HASH_KEY_SIZE $(HASH_KEY_SIZE)/HASH_KEY_SIZE $(hash_key_size)/' $(HASH_KEY_SIZE_SELECT_OPTFILE) )
-	endif
-	# user choice
-	HASH_KEY_SIZE=$(hash_key_size)
-else
-	HASH_KEY_SIZE ?= 64
-endif
-
-
 # option: mpi - 0 do not use MPI (no multi-node support), 1 use MPI (enable multi-node support). Default: autodetect
 ifdef mpi
 	# does it differ from last?
@@ -353,7 +342,7 @@ ifdef mpi
 endif
 
 # override: MPICXX - the MPI compiler
-MPICXX ?= $(shell which mpicxx)
+MPICXX ?= $(shell which mpicxx 2> /dev/null)
 
 ifeq ($(MPICXX),)
 	ifeq ($(USE_MPI),1)
@@ -492,7 +481,7 @@ LDLIBS ?=
 
 # INCPATH
 # make GPUSph.cc find problem_select.opt, and problem_select.opt find the problem header
-INCPATH += -I$(SRCDIR) $(foreach adir,$(SRCSUBS),-I$(adir)) -I$(OPTSDIR)
+INCPATH += -I$(SRCDIR) $(foreach adir,$(SRCSUBS),-I$(adir)) -I$(USER_PROBLEM_DIR) -I$(OPTSDIR)
 
 # access the CUDA include files from the C++ compiler too, but mark their path as a system include path
 # so that they can be skipped when generating dependencies. This must only be done for the host compiler,
@@ -736,10 +725,6 @@ $(FASTMATH_SELECT_OPTFILE): | $(OPTSDIR)
 	@echo "/* Determines if fastmath is enabled for GPU code. */" \
 		> $@
 	@echo "#define FASTMATH $(FASTMATH)" >> $@
-$(HASH_KEY_SIZE_SELECT_OPTFILE): | $(OPTSDIR)
-	@echo "/* Determines the size in bits of the hashKey used to sort the particles on the device. */" \
-		> $@
-	@echo "#define HASH_KEY_SIZE $(HASH_KEY_SIZE)" >> $@
 $(MPI_SELECT_OPTFILE): | $(OPTSDIR)
 	@echo "/* Determines if we are using MPI (for multi-node) or not. */" \
 		> $@
@@ -758,7 +743,7 @@ $(GPUSPH_VERSION_OPTFILE): | $(OPTSDIR)
 $(OBJS): $(DBG_SELECT_OPTFILE)
 
 # compile CPU objects
-$(CCOBJS): $(OBJDIR)/%.o: $(SRCDIR)/%.cc $(HASH_KEY_SIZE_SELECT_OPTFILE) | $(OBJSUBS)
+$(CCOBJS): $(OBJDIR)/%.o: $(SRCDIR)/%.cc | $(OBJSUBS)
 	$(call show_stage,CC,$(@F))
 	$(CMDECHO)$(CXX) $(CC_INCPATH) $(CPPFLAGS) $(CXXFLAGS) -c -o $@ $<
 
@@ -767,14 +752,14 @@ $(MPICXXOBJS): $(OBJDIR)/%.o: $(SRCDIR)/%.cc | $(OBJSUBS)
 	$(CMDECHO)$(MPICXX) $(CC_INCPATH) $(CPPFLAGS) $(CXXFLAGS) -c -o $@ $<
 
 # compile GPU objects
-$(CUOBJS): $(OBJDIR)/%.o: $(SRCDIR)/%.cu $(COMPUTE_SELECT_OPTFILE) $(FASTMATH_SELECT_OPTFILE) $(HASH_KEY_SIZE_SELECT_OPTFILE) | $(OBJSUBS)
+$(CUOBJS): $(OBJDIR)/%.o: $(SRCDIR)/%.cu $(COMPUTE_SELECT_OPTFILE) $(FASTMATH_SELECT_OPTFILE) | $(OBJSUBS)
 	$(call show_stage,CU,$(@F))
 	$(CMDECHO)$(NVCC) $(CPPFLAGS) $(CUFLAGS) -c -o $@ $<
 
 # compile program to list compute capabilities of installed devices.
 # Filter out -arch=sm_$(COMPUTE) from LDFLAGS becaus we already have it in CUFLAGS
 # and it being present twice causes complains from nvcc
-$(LIST_CUDA_CC): $(LIST_CUDA_CC).cu
+$(LIST_CUDA_CC): $(LIST_CUDA_CC).cc
 	$(call show_stage,SCRIPTS,$(@F))
 	$(CMDECHO)$(NVCC) $(CPPFLAGS) $(filter-out --ptxas-options=%,$(filter-out --generate-line-info,$(CUFLAGS))) -o $@ $< $(filter-out -arch=sm_%,$(LDFLAGS))
 
@@ -810,7 +795,7 @@ computeclean:
 	$(RM) $(LIST_CUDA_CC) $(COMPUTE_SELECT_OPTFILE)
 	$(SED_COMMAND) '/COMPUTE=/d' Makefile.conf
 
-# target: cookiesclean - Clean last dbg, problem, compute, hash_key_size and fastmath choices,
+# target: cookiesclean - Clean last dbg, problem, compute and fastmath choices,
 # target:                forcing .*_select.opt files to be regenerated (use if they're messed up)
 cookiesclean:
 	$(RM) -r $(OPTFILES) $(OPTSDIR)
@@ -861,7 +846,6 @@ show:
 	@echo "LINKER:          $(LINKER)"
 	@echo "Compute cap.:    $(COMPUTE)"
 	@echo "Fastmath:        $(FASTMATH)"
-	@echo "Hashkey size:    $(HASH_KEY_SIZE)"
 	@echo "USE_MPI:         $(USE_MPI)"
 	@echo "USE_HDF5:        $(USE_HDF5)"
 	@echo "INCPATH:         $(INCPATH)"
@@ -919,8 +903,6 @@ Makefile.conf: Makefile $(OPTFILES)
 	$(CMDECHO)grep "\#define COMPUTE" $(COMPUTE_SELECT_OPTFILE) | cut -f2-3 -d ' ' | tr ' ' '=' >> $@
 	$(CMDECHO)# recover value of FASTMATH from OPTFILES
 	$(CMDECHO)grep "\#define FASTMATH" $(FASTMATH_SELECT_OPTFILE) | cut -f2-3 -d ' ' | tr ' ' '=' >> $@
-	$(CMDECHO)# recover value of HASH_KEY_SIZE from OPTFILES
-	$(CMDECHO)grep "\#define HASH_KEY_SIZE" $(HASH_KEY_SIZE_SELECT_OPTFILE) | cut -f2-3 -d ' ' | tr ' ' '=' >> $@
 	$(CMDECHO)# recover value of USE_MPI from OPTFILES
 	$(CMDECHO)grep "\#define USE_MPI" $(MPI_SELECT_OPTFILE) | cut -f2-3 -d ' ' | tr ' ' '=' >> $@
 	$(CMDECHO)# recover value of USE_HDF5 from OPTFILES
@@ -939,10 +921,6 @@ Makefile.conf: Makefile $(OPTFILES)
 # to define __CUDA_INTERNAL_COMPILATION__ to mute an error during traversal of
 # some CUDA system includes
 #
-# Finally, both GPUDEPS and CPUDEPS must depend on the _presence_ of the option file
-# for hash keys, to prevent errors about undefined hash key size every time
-# `src/hashkey.h` is preprocessed
-#
 # Both GPUDEPS and CPUS also depend from Makefile.conf, to ensure they are rebuilt when
 # e.g. the problem changes. This avoids a situation like the following:
 # * developer builds with problem A
@@ -954,7 +932,7 @@ Makefile.conf: Makefile $(OPTFILES)
 # This is particularly important to ensure that `make compile-problems` works correctly.
 # Of course, Makefile.conf has to be stripped from the list of dependencies before passing them
 # to the loop that builds the deps.
-$(GPUDEPS): $(CUFILES) Makefile.conf | $(HASH_KEY_SIZE_SELECT_OPTFILE)
+$(GPUDEPS): $(CUFILES) Makefile.conf
 	$(call show_stage,DEPS,GPU)
 	$(CMDECHO)echo '# GPU sources dependencies generated with "make deps"' > $@
 	$(CMDECHO)for srcfile in $(filter-out Makefile.conf,$^) ; do \
@@ -966,7 +944,7 @@ $(GPUDEPS): $(CUFILES) Makefile.conf | $(HASH_KEY_SIZE_SELECT_OPTFILE)
 		-MG -MM $$srcfile -MT $$objfile >> $@ ; \
 		done
 
-$(CPUDEPS): $(CCFILES) $(MPICXXFILES) Makefile.conf | $(HASH_KEY_SIZE_SELECT_OPTFILE)
+$(CPUDEPS): $(CCFILES) $(MPICXXFILES) Makefile.conf
 	$(call show_stage,DEPS,CPU)
 	$(CMDECHO)echo '# CPU sources dependencies generated with "make deps"' > $@
 	$(CMDECHO)for srcfile in $(filter-out Makefile.conf,$^) ; do \
@@ -993,9 +971,11 @@ docsclean:
 	$(CMDECHO)rm -rf $(DOCSDIR)
 
 # target: tags - Create TAGS file
-tags: TAGS
-TAGS: $(wildcard $(SRCDIR)/*)
-	$(CMDECHO)etags -R -h=.h.cuh.inc --exclude=docs --langmap=c++:.cc.cuh.cu.def
+tags: TAGS cscope.out
+TAGS: $(ALLSRCFILES)
+	$(CMDECHO)etags -R -h=.h.cuh.inc --langmap=c++:.cc.cuh.cu.def.h.inc src/ options/ scripts/
+cscope.out: $(ALLSRCFILES)
+	$(CMDECHO)which cscope > /dev/null && cscope -b $(INCPATH) -R -ssrc/ -soptions/ || touch cscope.out
 
 
 # target: test - Run GPUSPH with WaveTank. Compile it if needed
@@ -1005,10 +985,14 @@ test: all
 
 # target: compile-problems - Test that all problems compile
 compile-problems:
-	$(CMDECHO)for prob in $(PROBLEM_LIST) ; do \
-		echo [TEST-BUILD] $${prob} ; \
-		$(MAKE) problem=$${prob} || exit 1 ; \
+	$(CMDECHO)pn=1 ; for prob in $(PROBLEM_LIST) ; do \
+		echo [TEST-BUILD $${pn}/$(words $(PROBLEM_LIST))] $${prob} ; \
+		$(MAKE) problem=$${prob} || exit 1 ; pn=$$(($$pn+1)) ; \
 		done
+
+# target: <problem_name> - Compile the given problem
+$(PROBLEM_LIST):
+	$(CMDECHO)$(MAKE) problem=$@
 
 # target: list-problems - List available problems
 list-problems:

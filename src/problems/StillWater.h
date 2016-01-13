@@ -19,15 +19,15 @@ class StillWater: public Problem {
 		double		H; // still water level
 		uint		dyn_layers; // layers of dynamic boundaries particles
 		bool		m_usePlanes; // use planes or boundaries
+		double3		m_fluidOrigin; // bottom level
 
 	public:
 		StillWater(GlobalData *);
 		~StillWater(void);
 
 		int fill_parts(void);
-		uint fill_planes(void);
 		void copy_to_array(BufferList &);
-		void copy_planes(double4*);
+		void copy_planes(PlaneList &);
 
 		void release_memory(void);
 };

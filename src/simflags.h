@@ -7,7 +7,7 @@
 
     Johns Hopkins University, Baltimore, MD
 
-    This file is part of GPUSPH.
+    This file is part of GPUSPH.
 
     GPUSPH is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -45,8 +45,10 @@
 // XSPH
 #define ENABLE_XSPH				(ENABLE_DTADAPT << 1)
 
+// planes
+#define ENABLE_PLANES			(ENABLE_XSPH << 1)
 // DEM
-#define ENABLE_DEM				(ENABLE_XSPH << 1)
+#define ENABLE_DEM				(ENABLE_PLANES << 1)
 
 // moving boundaries and rigid bodies
 #define ENABLE_MOVING_BODIES	(ENABLE_DEM << 1)
@@ -60,15 +62,26 @@
 // Ferrari correction
 #define ENABLE_FERRARI			(ENABLE_WATER_DEPTH << 1)
 
-// Summation density
-#define ENABLE_DENSITY_SUM		(ENABLE_FERRARI << 1)
+// Density diffusion (Molteni & Colagrossi 2009)
+#define ENABLE_DENSITY_DIFFUSION (ENABLE_FERRARI << 1)
 
-#define LAST_SIMFLAG		ENABLE_DENSITY_SUM
+// Summation density
+#define ENABLE_DENSITY_SUM		(ENABLE_DENSITY_DIFFUSION << 1)
+
+// Compute gamma through Gauss quadrature forumla
+#define ENABLE_GAMMA_QUADRATURE		(ENABLE_DENSITY_SUM << 1)
+
+#define LAST_SIMFLAG		ENABLE_GAMMA_QUADRATURE
 
 // since flags are a bitmap, LAST_SIMFLAG - 1 sets all bits before
 // the LAST_SIMFLAG bit, and OR-ing with LAST_SIMFLAG gives us
 // all flags. This is slightly safer than using ((LAST_SIMFLAG << 1) - 1)
 // in case LAST_SIMFLAG is already the last bit
 #define ENABLE_ALL_SIMFLAGS		(LAST_SIMFLAG | (LAST_SIMFLAG-1))
+
+/// General query that identifies whether the flags in field are set, true only if all of them are
+#define QUERY_ALL_FLAGS(field, flags)	(((field) & (flags)) == (flags))
+/// General query that identifies whether at least one flag in field is set
+#define QUERY_ANY_FLAGS(field, flags)	((field) & (flags))
 
 #endif

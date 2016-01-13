@@ -1,4 +1,4 @@
-/*  Copyright 2013 Alexis Herault, Giuseppe Bilotta, Robert A. Dalrymple, Eugenio Rustico, Ciro Del Negro
+/*  Copyright 2011-2013 Alexis Herault, Giuseppe Bilotta, Robert A. Dalrymple, Eugenio Rustico, Ciro Del Negro
 
     Istituto Nazionale di Geofisica e Vulcanologia
         Sezione di Catania, Catania, Italy
@@ -7,7 +7,7 @@
 
     Johns Hopkins University, Baltimore, MD
 
-    This file is part of GPUSPH.
+    This file is part of GPUSPH.
 
     GPUSPH is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -23,17 +23,37 @@
     along with GPUSPH.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-/* decltype */
+#include <string>
+#include "Point.h"
 
-#ifndef _DECLTYPE_H
-#define _DECLTYPE_H
+class XYZReader {
+private:
 
-/* decltype is only avaialable on C++11, but both gcc and clang support
- * __decltype even on older standards, so use them
- */
+	std::string		filename;
+	unsigned int	npart;
 
-#if __cplusplus < 201103L
-#define decltype __decltype
-#endif
+public:
+	// constructor
+	XYZReader();
+	~XYZReader();
 
-#endif
+	// returns the number of particles in the XYZ file
+	int getNParts();
+
+	// allocates the buffer and reads the data from the XYZ file; optionally, returns bbox
+	void read(Point *bbox_min = NULL, Point *bbox_max = NULL);
+
+	// counts the points in the file, without allocating nor loading anything
+	uint count();
+
+	// frees the buffer
+	void empty();
+
+	// free the buffer, reset npart and filename
+	void reset();
+
+	// sets the filename
+	void setFilename(std::string const&);
+
+	PointVect points;
+};

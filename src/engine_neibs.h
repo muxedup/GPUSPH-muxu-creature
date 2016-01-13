@@ -7,7 +7,7 @@
 
     Johns Hopkins University, Baltimore, MD
 
-    This file is part of GPUSPH.
+    This file is part of GPUSPH.
 
     GPUSPH is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -45,6 +45,8 @@
 class AbstractNeibsEngine
 {
 public:
+	virtual ~AbstractNeibsEngine() {}
+
 	virtual void
 	setconstants(const SimParams *simparams, const PhysParams *physparams,
 		float3 const& worldOrigin, uint3 const& gridSize, float3 const& cellSize,
@@ -92,8 +94,8 @@ public:
 						const uint		numParticles) = 0;
 
 	virtual void
-	sort(	hashKey	*particleHash,
-			uint	*particleIndex,
+	sort(	MultiBufferList::const_iterator bufread,
+			MultiBufferList::iterator bufwrite,
 			uint	numParticles) = 0;
 
 	virtual void
