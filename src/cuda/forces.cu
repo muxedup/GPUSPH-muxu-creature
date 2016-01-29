@@ -475,7 +475,7 @@ bind_textures(
 		CUDA_SAFE_CALL(cudaBindTexture(0, eulerVelTex, eulerVel, numParticles*sizeof(float4)));
 	} else {
 		if (eulerVel)
-			cerr << "eulerVel set but not used" << endl;
+			cerr << "eulerVel set but not used" << std::endl;
 	}
 
 	if (boundarytype == SA_BOUNDARY) {

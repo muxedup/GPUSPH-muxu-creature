@@ -48,46 +48,47 @@ class Basin: public Problem {
 		PointVect	paddle_parts;
 		PointVect	test_points;
 		double 		lambda, lambda_y;
-	
+
 		Cylinder	cyl[11];
 		Cone		cone;
-		
+
 		double		paddle_length;
 		double		paddle_width;
 		double		h_length, height, slope_length, beta;
 		double		H;		// still water level
 		double		lx, ly, lz;		// dimension of experiment box
-		
+
 		// Moving boundary data
 		double		paddle_amplitude, paddle_omega;
 		double3     paddle_origin;
 		double 		paddle_tstart, paddle_tend;
-		
+
 		// jonswap coefficients
 		vector<double>	amps;
 		vector<double>	wcs;
-		int		nfreqs;
-		
+		int		nfreqs, ndirs;
+
 		// Dispersion coefficients
 		vector<double> k_disp;
-		vector<double> waveangles;
+		vector<double> wcAngles;
+		vector<double> waveAngles;
 
 
 	//  Note hard coded number of paddles
-	 
+
 		int			npaddles;
 		Rect		paddle[64];
-		
+
 		double composite_avel(double t, int n, double dy) {
 			double avel = 0.0;
-			
+
 			for(size_t i = 0; i < amps.size(); i++) {
-				avel -= amps[i] * wcs[i] * cos(k_disp[i]*sin( waveangles[i] * (n - 0.5) * dy ) + wcs[i]*t);
+				avel -= amps[i] * wcs[i] * cos(k_disp[i]*sin( wcAngles[i] * (n - 0.5) * dy ) + wcs[i]*t);
 			}
-			
+
 			return avel;
 		}
-		
+
 	public:
 		Basin( GlobalData *);
 		~Basin(void);
@@ -96,7 +97,7 @@ class Basin: public Problem {
 		void copy_planes(double4*);
 
 		void copy_to_array(BufferList &);
-		
+
 		void moving_bodies_callback(const uint, Object*, const double, const double, const float3&,
 			 	 	 	 	 	 	const float3&, const KinematicData &, KinematicData &,
 			 	 	 	 	 	 	double3&, EulerParameters&);
